@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/BurntSushi/toml"
-	"github.com/f24aalam/agentsync/internal/agent"
 )
 
 type jsonMCPConfig struct {
@@ -17,12 +16,12 @@ type tomlMCPConfig struct {
 	MCPServers map[string]MCPServer `toml:"mcp_servers"`
 }
 
-func RenderMCP(cfg MCPConfig, target agent.Agent) ([]byte, error) {
-	switch target.MCPFormat {
-	case agent.MCPFormatJSON:
+func RenderMCP(cfg MCPConfig, format string) ([]byte, error) {
+	switch format {
+	case "json":
 		payload := jsonMCPConfig{MCPServers: sanitizeServers(cfg.Servers)}
 		return json.MarshalIndent(payload, "", "  ")
-	case agent.MCPFormatTOML:
+	case "toml":
 		payload := tomlMCPConfig{MCPServers: sanitizeServers(cfg.Servers)}
 
 		var buf bytes.Buffer
@@ -32,7 +31,7 @@ func RenderMCP(cfg MCPConfig, target agent.Agent) ([]byte, error) {
 
 		return buf.Bytes(), nil
 	default:
-		return nil, fmt.Errorf("unsupported MCP format: %s", target.MCPFormat)
+		return nil, fmt.Errorf("unsupported MCP format: %s", format)
 	}
 }
 

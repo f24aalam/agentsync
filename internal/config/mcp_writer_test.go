@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/f24aalam/agentsync/internal/agent"
 )
 
 func TestRenderMCPJSON(t *testing.T) {
@@ -24,12 +22,7 @@ func TestRenderMCPJSON(t *testing.T) {
 		},
 	}
 
-	target, ok := agent.ByID("claude-code")
-	if !ok {
-		t.Fatalf("expected claude-code agent")
-	}
-
-	data, err := RenderMCP(cfg, target)
+	data, err := RenderMCP(cfg, "json")
 	if err != nil {
 		t.Fatalf("RenderMCP returned error: %v", err)
 	}
@@ -67,12 +60,7 @@ func TestRenderMCPJSONOmitsEmptyEnv(t *testing.T) {
 		},
 	}
 
-	target, ok := agent.ByID("cursor")
-	if !ok {
-		t.Fatalf("expected cursor agent")
-	}
-
-	data, err := RenderMCP(cfg, target)
+	data, err := RenderMCP(cfg, "json")
 	if err != nil {
 		t.Fatalf("RenderMCP returned error: %v", err)
 	}
@@ -97,12 +85,7 @@ func TestRenderMCPTOML(t *testing.T) {
 		},
 	}
 
-	target, ok := agent.ByID("codex")
-	if !ok {
-		t.Fatalf("expected codex agent")
-	}
-
-	data, err := RenderMCP(cfg, target)
+	data, err := RenderMCP(cfg, "toml")
 	if err != nil {
 		t.Fatalf("RenderMCP returned error: %v", err)
 	}
@@ -133,12 +116,7 @@ func TestRenderMCPTOMLOmitsEmptyEnv(t *testing.T) {
 		},
 	}
 
-	target, ok := agent.ByID("codex")
-	if !ok {
-		t.Fatalf("expected codex agent")
-	}
-
-	data, err := RenderMCP(cfg, target)
+	data, err := RenderMCP(cfg, "toml")
 	if err != nil {
 		t.Fatalf("RenderMCP returned error: %v", err)
 	}
@@ -152,13 +130,7 @@ func TestRenderMCPUnsupportedFormat(t *testing.T) {
 	t.Parallel()
 
 	cfg := MCPConfig{Servers: map[string]MCPServer{}}
-	target := agent.Agent{
-		ID:        "custom",
-		Name:      "Custom",
-		MCPFormat: agent.MCPFormat("yaml"),
-	}
-
-	if _, err := RenderMCP(cfg, target); err == nil {
+	if _, err := RenderMCP(cfg, "yaml"); err == nil {
 		t.Fatalf("expected unsupported format to return an error")
 	}
 }
