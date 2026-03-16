@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/f24aalam/agentsync/internal/agent"
 	"github.com/f24aalam/agentsync/internal/config"
+	"github.com/f24aalam/agentsync/internal/detect"
 	"github.com/f24aalam/agentsync/internal/scaffold"
 	"github.com/spf13/cobra"
 )
@@ -30,9 +32,32 @@ type initAnswers struct {
 	AddGitignore   bool
 }
 
+type importPlan struct {
+	Guidelines []importGuideline
+	Skills     []importSkill
+	MCPServers map[string]config.MCPServer
+}
+
+type importGuideline struct {
+	Label   string
+	Content string
+}
+
+type importSkill struct {
+	Name      string
+	SourceDir string
+}
+
+type importSummaryItem struct {
+	Label string
+	Value string
+}
+
 var (
-	runOverwriteConfirm = promptOverwriteConfirm
-	runInitSurvey       = promptInitSurvey
+	runOverwriteConfirm  = promptOverwriteConfirm
+	runProjectNamePrompt = promptProjectName
+	runInitSurvey        = promptInitSurvey
+	runImportFlow        = runImportPrompts
 )
 
 func newInitCmd() *cobra.Command {
@@ -69,7 +94,23 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	answers, err := runInitSurvey(cmd, defaultProjectName)
+	projectName, err := runProjectNamePrompt(cmd, defaultProjectName)
+	if err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			printInitCancelled(cmd)
+			return nil
+		}
+		return err
+	}
+
+	var written []string
+
+	detected, err := detect.ScanProject(".")
+	if err != nil {
+		return err
+	}
+
+	imports, err := runImportFlow(cmd, detected)
 	if err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			printInitCancelled(cmd)
@@ -82,9 +123,23 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var written []string
+	importedItems, importedMCP, err := applyImports(imports)
+	if err != nil {
+		return err
+	}
 
-	if answers.AddGuidelines {
+	answers, err := runInitSurvey(cmd, projectName)
+	if err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			printInitCancelled(cmd)
+			return nil
+		}
+		return err
+	}
+
+	answers.ProjectName = projectName
+
+	if answers.AddGuidelines && len(imports.Guidelines) == 0 {
 		path, err := scaffold.CreateGuidelines(answers.ProjectName)
 		if err != nil {
 			return err
@@ -100,7 +155,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		written = append(written, path)
 	}
 
-	if answers.AddMCPConfig {
+	if answers.AddMCPConfig && !importedMCP {
 		path, err := scaffold.CreateMCPConfig()
 		if err != nil {
 			return err
@@ -124,6 +179,9 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if len(importedItems) > 0 {
+		printImportSummary(cmd, importedItems)
+	}
 	printInitSummary(cmd, written)
 	return nil
 }
@@ -148,17 +206,14 @@ func promptOverwriteConfirm(cmd *cobra.Command) (bool, error) {
 	return overwrite, nil
 }
 
-func promptInitSurvey(cmd *cobra.Command, defaultName string) (initAnswers, error) {
-	answers := initAnswers{
-		ProjectName: defaultName,
-	}
-
+func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {
+	name := defaultName
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Project name").
 				Placeholder("my-project").
-				Value(&answers.ProjectName).
+				Value(&name).
 				Validate(func(value string) error {
 					if strings.TrimSpace(value) == "" {
 						return errors.New("project name is required")
@@ -166,6 +221,21 @@ func promptInitSurvey(cmd *cobra.Command, defaultName string) (initAnswers, erro
 					return nil
 				}),
 		),
+	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(name), nil
+}
+
+func promptInitSurvey(cmd *cobra.Command, projectName string) (initAnswers, error) {
+	answers := initAnswers{
+		ProjectName: projectName,
+	}
+
+	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Add a core guidelines file?").
@@ -202,6 +272,303 @@ func promptInitSurvey(cmd *cobra.Command, defaultName string) (initAnswers, erro
 
 	answers.ProjectName = strings.TrimSpace(answers.ProjectName)
 	return answers, nil
+}
+
+func runImportPrompts(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
+	if detection.Empty() {
+		return importPlan{}, nil
+	}
+
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), detect.Overview(detection))
+
+	groups := detect.DedupGuidelines(detection.Guidelines)
+	selectedGuidelines, err := selectGuidelines(cmd, groups)
+	if err != nil {
+		return importPlan{}, err
+	}
+
+	skills := detect.DedupSkills(detection.Skills)
+	selectedSkills, err := selectSkills(cmd, skills)
+	if err != nil {
+		return importPlan{}, err
+	}
+
+	mcpGroups := detect.DedupMCP(detection.MCPServers)
+	selectedServers, err := selectMCPServers(cmd, mcpGroups)
+	if err != nil {
+		return importPlan{}, err
+	}
+
+	return importPlan{
+		Guidelines: selectedGuidelines,
+		Skills:     selectedSkills,
+		MCPServers: selectedServers,
+	}, nil
+}
+
+func selectGuidelines(cmd *cobra.Command, groups []detect.GuidelineGroup) ([]importGuideline, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
+	options := make([]huh.Option[string], 0, len(groups))
+	indexByID := make(map[string]detect.GuidelineGroup)
+	for i, group := range groups {
+		id := fmt.Sprintf("g-%d", i)
+		label := guidelineGroupLabel(group)
+		options = append(options, huh.NewOption(label, id))
+		indexByID[id] = group
+	}
+
+	var selected []string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Existing agent configs detected. Select guidelines to import into core.md").
+				Options(options...).
+				Value(&selected),
+		),
+	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+
+	out := make([]importGuideline, 0, len(selected))
+	for _, id := range selected {
+		group, ok := indexByID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, importGuideline{
+			Label:   guidelineGroupLabel(group),
+			Content: group.Content,
+		})
+	}
+	return out, nil
+}
+
+func selectSkills(cmd *cobra.Command, groups []detect.SkillGroup) ([]importSkill, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
+	options := make([]huh.Option[string], 0, len(groups))
+	groupByID := make(map[string]detect.SkillGroup)
+	for i, group := range groups {
+		id := fmt.Sprintf("s-%d", i)
+		label := group.Name
+		if group.Conflict {
+			label += "  (conflict)"
+		}
+		options = append(options, huh.NewOption(label, id))
+		groupByID[id] = group
+	}
+
+	var selected []string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Select skills to import").
+				Options(options...).
+				Value(&selected),
+		),
+	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+
+	out := make([]importSkill, 0, len(selected))
+	for _, id := range selected {
+		group, ok := groupByID[id]
+		if !ok {
+			continue
+		}
+
+		var chosen detect.DetectedSkill
+		if group.Conflict {
+			var err error
+			chosen, err = selectSkillVariant(cmd, group)
+			if err != nil {
+				return nil, err
+			}
+		} else if len(group.Variants) > 0 {
+			chosen = group.Variants[0]
+		}
+
+		if chosen.Name == "" {
+			continue
+		}
+		out = append(out, importSkill{
+			Name:      chosen.Name,
+			SourceDir: chosen.Path,
+		})
+	}
+
+	return out, nil
+}
+
+func selectSkillVariant(cmd *cobra.Command, group detect.SkillGroup) (detect.DetectedSkill, error) {
+	options := make([]huh.Option[string], 0, len(group.Variants))
+	variantsByID := make(map[string]detect.DetectedSkill)
+	for i, variant := range group.Variants {
+		id := fmt.Sprintf("v-%d", i)
+		label := fmt.Sprintf("%s (%s)", variant.Agent.Name, variant.Path)
+		options = append(options, huh.NewOption(label, id))
+		variantsByID[id] = variant
+	}
+
+	var choice string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Select a version for skill %q", group.Name)).
+				Options(options...).
+				Value(&choice),
+		),
+	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+
+	if err := form.Run(); err != nil {
+		return detect.DetectedSkill{}, err
+	}
+
+	return variantsByID[choice], nil
+}
+
+func selectMCPServers(cmd *cobra.Command, groups []detect.MCPGroup) (map[string]config.MCPServer, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[string]config.MCPServer)
+	for _, group := range groups {
+		var chosen detect.DetectedMCPServer
+		if group.Conflict {
+			var err error
+			chosen, err = selectMCPVariant(cmd, group)
+			if err != nil {
+				return nil, err
+			}
+		} else if len(group.Variants) > 0 {
+			chosen = group.Variants[0]
+		}
+
+		if chosen.Name != "" {
+			out[chosen.Name] = chosen.Server
+		}
+	}
+	return out, nil
+}
+
+func selectMCPVariant(cmd *cobra.Command, group detect.MCPGroup) (detect.DetectedMCPServer, error) {
+	options := make([]huh.Option[string], 0, len(group.Variants))
+	variantsByID := make(map[string]detect.DetectedMCPServer)
+	for i, variant := range group.Variants {
+		id := fmt.Sprintf("m-%d", i)
+		label := fmt.Sprintf("%s (command=%s)", variant.Agent.Name, variant.Server.Command)
+		options = append(options, huh.NewOption(label, id))
+		variantsByID[id] = variant
+	}
+
+	var choice string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Select a version for MCP server %q", group.Name)).
+				Options(options...).
+				Value(&choice),
+		),
+	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+
+	if err := form.Run(); err != nil {
+		return detect.DetectedMCPServer{}, err
+	}
+
+	return variantsByID[choice], nil
+}
+
+func guidelineGroupLabel(group detect.GuidelineGroup) string {
+	if len(group.Sources) == 0 {
+		return "unknown"
+	}
+
+	files := make([]string, 0, len(group.Sources))
+	agents := make([]string, 0, len(group.Sources))
+	for _, source := range group.Sources {
+		files = append(files, filepath.Base(source.Path))
+		agents = append(agents, source.Agent.Name)
+	}
+	files = uniqueStrings(files)
+	agents = uniqueStrings(agents)
+	return fmt.Sprintf("%s (%s)", strings.Join(files, ", "), strings.Join(agents, ", "))
+}
+
+func uniqueStrings(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func applyImports(plan importPlan) ([]importSummaryItem, bool, error) {
+	if len(plan.Guidelines) == 0 && len(plan.Skills) == 0 && len(plan.MCPServers) == 0 {
+		return nil, false, nil
+	}
+
+	var imported []importSummaryItem
+	for _, guideline := range plan.Guidelines {
+		path, err := scaffold.ImportGuidelineToCore(guideline.Label, guideline.Content)
+		if err != nil {
+			return nil, false, err
+		}
+		imported = append(imported, importSummaryItem{
+			Label: "Guidelines",
+			Value: path,
+		})
+	}
+
+	for _, skill := range plan.Skills {
+		_, err := scaffold.ImportSkill(skill.Name, skill.SourceDir)
+		if err != nil {
+			return nil, false, err
+		}
+		imported = append(imported, importSummaryItem{
+			Label: "Skill",
+			Value: fmt.Sprintf(".ai/skills/%s/", skill.Name),
+		})
+	}
+
+	importedMCP := false
+	if len(plan.MCPServers) > 0 {
+		path, err := scaffold.ImportMCPServers(plan.MCPServers)
+		if err != nil {
+			return nil, false, err
+		}
+		if path != "" {
+			importedMCP = true
+			names := make([]string, 0, len(plan.MCPServers))
+			for name := range plan.MCPServers {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			for _, name := range names {
+				imported = append(imported, importSummaryItem{
+					Label: "MCP Server",
+					Value: name,
+				})
+			}
+		}
+	}
+
+	return imported, importedMCP, nil
 }
 
 func agentOptions() []huh.Option[string] {
@@ -266,4 +633,15 @@ func printInitSummary(cmd *cobra.Command, written []string) {
 	}
 	_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Done! Run agentsync install to configure your agents."))
+}
+
+func printImportSummary(cmd *cobra.Command, items []importSummaryItem) {
+	headerStyle := lipgloss.NewStyle().Bold(true)
+	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Importing existing configs..."))
+	for _, item := range items {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s %-10s → %s\n", checkStyle.Render("✓"), item.Label, item.Value)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout())
 }

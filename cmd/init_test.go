@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f24aalam/agentsync/internal/detect"
 	"github.com/spf13/cobra"
 )
 
@@ -24,14 +25,26 @@ func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
 	}
 
 	restoreOverwrite := runOverwriteConfirm
+	restoreProject := runProjectNamePrompt
+	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 	t.Cleanup(func() {
 		runOverwriteConfirm = restoreOverwrite
+		runProjectNamePrompt = restoreProject
+		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	})
 
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return false, nil
+	}
+	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
+		t.Fatalf("project name prompt should not run when overwrite is declined")
+		return "", nil
+	}
+	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
+		t.Fatalf("import flow should not run when overwrite is declined")
+		return importPlan{}, nil
 	}
 	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
 		t.Fatalf("survey should not run when overwrite is declined")
@@ -62,19 +75,29 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	defer mustChdir(t, wd)
 
 	restoreOverwrite := runOverwriteConfirm
+	restoreProject := runProjectNamePrompt
+	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 	t.Cleanup(func() {
 		runOverwriteConfirm = restoreOverwrite
+		runProjectNamePrompt = restoreProject
+		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	})
 
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return true, nil
 	}
-	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
+	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		if defaultName != filepath.Base(tempDir) {
 			t.Fatalf("expected default name %q, got %q", filepath.Base(tempDir), defaultName)
 		}
+		return "AgentSync", nil
+	}
+	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
+		return importPlan{}, nil
+	}
+	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
 		return initAnswers{
 			ProjectName:    "AgentSync",
 			AddGuidelines:  true,
@@ -117,14 +140,24 @@ func TestInitAllowsEmptyAgentSelection(t *testing.T) {
 	defer mustChdir(t, wd)
 
 	restoreOverwrite := runOverwriteConfirm
+	restoreProject := runProjectNamePrompt
+	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 	t.Cleanup(func() {
 		runOverwriteConfirm = restoreOverwrite
+		runProjectNamePrompt = restoreProject
+		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	})
 
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return true, nil
+	}
+	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
+		return "AgentSync", nil
+	}
+	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
+		return importPlan{}, nil
 	}
 	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
 		return initAnswers{

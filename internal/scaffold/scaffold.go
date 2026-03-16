@@ -3,12 +3,15 @@ package scaffold
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/f24aalam/agentsync/internal/agent"
+	"github.com/f24aalam/agentsync/internal/config"
 )
 
 const (
@@ -110,6 +113,92 @@ func CreateMCPConfig() (string, error) {
 	return mcpConfigPath, nil
 }
 
+func ImportGuidelineToCore(sourceLabel string, content string) (string, error) {
+	if err := os.MkdirAll(guidelinesDir, 0o755); err != nil {
+		return "", err
+	}
+
+	header := fmt.Sprintf("## Imported: %s\n\n", sourceLabel)
+	block := header + strings.TrimSpace(content) + "\n\n"
+
+	var buf bytes.Buffer
+	if existing, err := os.ReadFile(guidelinesFilePath); err == nil {
+		buf.Write(existing)
+		if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n\n")) {
+			if bytes.HasSuffix(existing, []byte("\n")) {
+				buf.WriteByte('\n')
+			} else {
+				buf.WriteString("\n\n")
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	buf.WriteString(block)
+	if err := os.WriteFile(guidelinesFilePath, buf.Bytes(), 0o644); err != nil {
+		return "", err
+	}
+
+	return guidelinesFilePath, nil
+}
+
+func ImportSkill(name string, sourceDir string) (string, error) {
+	targetDir := filepath.Join(skillsDir, name)
+	if err := copyDir(sourceDir, targetDir); err != nil {
+		return "", err
+	}
+	return targetDir + string(os.PathSeparator), nil
+}
+
+func ImportMCPServers(servers map[string]config.MCPServer) (string, error) {
+	if len(servers) == 0 {
+		return "", nil
+	}
+
+	var buf bytes.Buffer
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for i, name := range names {
+		server := servers[name]
+		if i > 0 {
+			buf.WriteString("\n")
+		}
+		buf.WriteString(fmt.Sprintf("[servers.%s]\n", name))
+		buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
+		if len(server.Args) > 0 {
+			buf.WriteString("args = [")
+			for idx, arg := range server.Args {
+				if idx > 0 {
+					buf.WriteString(", ")
+				}
+				buf.WriteString(fmt.Sprintf("%q", arg))
+			}
+			buf.WriteString("]\n")
+		}
+		if len(server.Env) > 0 {
+			buf.WriteString(fmt.Sprintf("\n[servers.%s.env]\n", name))
+			keys := make([]string, 0, len(server.Env))
+			for key := range server.Env {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				buf.WriteString(fmt.Sprintf("%s = %q\n", key, server.Env[key]))
+			}
+		}
+	}
+
+	if err := os.WriteFile(mcpConfigPath, buf.Bytes(), 0o644); err != nil {
+		return "", err
+	}
+	return mcpConfigPath, nil
+}
+
 func UpdateGitignore(path string, agents []agent.Agent) (bool, error) {
 	entries := ignoreEntries(agents)
 	if len(entries) == 0 {
@@ -151,6 +240,67 @@ func UpdateGitignore(path string, agents []agent.Agent) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := copyFile(srcPath, dstPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err := out.Chmod(info.Mode()); err != nil {
+		return err
+	}
+
+	return out.Close()
 }
 
 func ignoreEntries(agents []agent.Agent) []string {
