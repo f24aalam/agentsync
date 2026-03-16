@@ -90,6 +90,9 @@ func uniqueSkillVariants(variants []DetectedSkill) []DetectedSkill {
 	seen := make(map[string]DetectedSkill)
 	for _, variant := range variants {
 		key := variant.SkillMD
+		if key == "" {
+			key = variant.Agent.Name + "::" + variant.Path
+		}
 		if _, ok := seen[key]; ok {
 			continue
 		}

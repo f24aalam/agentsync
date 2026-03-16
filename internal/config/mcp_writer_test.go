@@ -94,6 +94,9 @@ func TestRenderMCPTOML(t *testing.T) {
 	if !strings.Contains(output, "[mcp_servers.postgres]") {
 		t.Fatalf("expected TOML server section, got: %s", output)
 	}
+	if strings.Contains(output, "[mcp_servers]\n") {
+		t.Fatalf("expected dotted mcp_servers sections without parent table, got: %s", output)
+	}
 
 	if !strings.Contains(output, `[mcp_servers.postgres.env]`) {
 		t.Fatalf("expected TOML env section, got: %s", output)

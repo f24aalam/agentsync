@@ -128,7 +128,11 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	answers, err := runInitSurvey(cmd, projectName)
+	askGuidelines := len(imports.Guidelines) == 0
+	askSampleSkill := len(imports.Skills) == 0
+	askMCP := !importedMCP
+
+	answers, err := runInitSurvey(cmd, projectName, askGuidelines, askSampleSkill, askMCP)
 	if err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			printInitCancelled(cmd)
@@ -139,7 +143,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 
 	answers.ProjectName = projectName
 
-	if answers.AddGuidelines && len(imports.Guidelines) == 0 {
+	if answers.AddGuidelines && askGuidelines {
 		path, err := scaffold.CreateGuidelines(answers.ProjectName)
 		if err != nil {
 			return err
@@ -147,7 +151,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		written = append(written, path)
 	}
 
-	if answers.AddSampleSkill {
+	if answers.AddSampleSkill && askSampleSkill {
 		path, err := scaffold.CreateSampleSkill()
 		if err != nil {
 			return err
@@ -155,7 +159,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		written = append(written, path)
 	}
 
-	if answers.AddMCPConfig && !importedMCP {
+	if answers.AddMCPConfig && askMCP {
 		path, err := scaffold.CreateMCPConfig()
 		if err != nil {
 			return err
@@ -230,27 +234,34 @@ func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {
 	return strings.TrimSpace(name), nil
 }
 
-func promptInitSurvey(cmd *cobra.Command, projectName string) (initAnswers, error) {
+func promptInitSurvey(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 	answers := initAnswers{
 		ProjectName: projectName,
 	}
 
-	form := huh.NewForm(
-		huh.NewGroup(
+	groups := make([]*huh.Group, 0, 5)
+	if askGuidelines {
+		groups = append(groups, huh.NewGroup(
 			huh.NewConfirm().
 				Title("Add a core guidelines file?").
 				Value(&answers.AddGuidelines),
-		),
-		huh.NewGroup(
+		))
+	}
+	if askSampleSkill {
+		groups = append(groups, huh.NewGroup(
 			huh.NewConfirm().
 				Title("Add a sample skill?").
 				Value(&answers.AddSampleSkill),
-		),
-		huh.NewGroup(
+		))
+	}
+	if askMCP {
+		groups = append(groups, huh.NewGroup(
 			huh.NewConfirm().
 				Title("Add MCP configuration?").
 				Value(&answers.AddMCPConfig),
-		),
+		))
+	}
+	groups = append(groups,
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Select target agents").
@@ -264,7 +275,9 @@ func promptInitSurvey(cmd *cobra.Command, projectName string) (initAnswers, erro
 				Description("Keeps agent-specific output like .cursor/, .codex/, and AGENTS.md out of version control.").
 				Value(&answers.AddGitignore),
 		),
-	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
+	)
+
+	form := huh.NewForm(groups...).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
 
 	if err := form.Run(); err != nil {
 		return initAnswers{}, err

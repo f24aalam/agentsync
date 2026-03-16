@@ -46,7 +46,7 @@ func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
 		t.Fatalf("import flow should not run when overwrite is declined")
 		return importPlan{}, nil
 	}
-	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
+	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		t.Fatalf("survey should not run when overwrite is declined")
 		return initAnswers{}, nil
 	}
@@ -97,7 +97,7 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
 		return importPlan{}, nil
 	}
-	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
+	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		return initAnswers{
 			ProjectName:    "AgentSync",
 			AddGuidelines:  true,
@@ -159,7 +159,7 @@ func TestInitAllowsEmptyAgentSelection(t *testing.T) {
 	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
 		return importPlan{}, nil
 	}
-	runInitSurvey = func(cmd *cobra.Command, defaultName string) (initAnswers, error) {
+	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		return initAnswers{
 			ProjectName:  "AgentSync",
 			AddGitignore: true,

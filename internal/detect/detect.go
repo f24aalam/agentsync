@@ -65,6 +65,12 @@ func ScanProject(root string) (ProjectDetection, error) {
 		out.MCPServers = append(out.MCPServers, mcpServers...)
 	}
 
+	legacySkills, err := detectLegacySkills(root)
+	if err != nil {
+		return ProjectDetection{}, err
+	}
+	out.Skills = append(out.Skills, legacySkills...)
+
 	return out, nil
 }
 
@@ -139,6 +145,52 @@ func detectSkills(root string, target agent.Agent) ([]DetectedSkill, error) {
 		}
 		out = append(out, DetectedSkill{
 			Agent:   target,
+			Name:    entry.Name(),
+			Path:    skillDir,
+			SkillMD: string(data),
+		})
+	}
+
+	return out, nil
+}
+
+func detectLegacySkills(root string) ([]DetectedSkill, error) {
+	dir := filepath.Join(root, ".agents", "skills")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	legacyAgent := agent.Agent{
+		ID:   "legacy-agents",
+		Name: ".agents",
+	}
+
+	var out []DetectedSkill
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillDir := filepath.Join(dir, entry.Name())
+		skillMD := filepath.Join(skillDir, "SKILL.md")
+		data, err := os.ReadFile(skillMD)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				out = append(out, DetectedSkill{
+					Agent:   legacyAgent,
+					Name:    entry.Name(),
+					Path:    skillDir,
+					SkillMD: "",
+				})
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, DetectedSkill{
+			Agent:   legacyAgent,
 			Name:    entry.Name(),
 			Path:    skillDir,
 			SkillMD: string(data),
