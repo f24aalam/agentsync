@@ -50,6 +50,35 @@ func TestWriteLockRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteLockEmptyAgents(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync.lock")
+
+	if err := WriteLock(path, nil); err != nil {
+		t.Fatalf("WriteLock returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read sync.lock: %v", err)
+	}
+
+	if string(data) != "agents = []\n" {
+		t.Fatalf("expected empty lockfile to contain agents = [], got %q", string(data))
+	}
+
+	got, err := ReadLock(path)
+	if err != nil {
+		t.Fatalf("ReadLock returned error: %v", err)
+	}
+
+	if len(got) != 0 {
+		t.Fatalf("expected empty agent list, got %v", got)
+	}
+}
+
 func TestReadLockInvalidTOML(t *testing.T) {
 	t.Parallel()
 

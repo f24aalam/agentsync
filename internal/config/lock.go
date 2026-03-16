@@ -1,8 +1,10 @@
 package config
 
 import (
-	"bytes"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -26,12 +28,11 @@ func ReadLock(path string) ([]string, error) {
 }
 
 func WriteLock(path string, agents []string) error {
-	lock := lockFile{Agents: agents}
-
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(lock); err != nil {
-		return err
+	quoted := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		quoted = append(quoted, strconv.Quote(agent))
 	}
 
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	content := fmt.Sprintf("agents = [%s]\n", strings.Join(quoted, ", "))
+	return os.WriteFile(path, []byte(content), 0o644)
 }
