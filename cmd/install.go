@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var runAgentInstall = agentpkg.Install
+var runAgentRunner = agentpkg.Run
 
 func newInstallCmd() *cobra.Command {
 	return &cobra.Command{
@@ -22,11 +22,19 @@ func newInstallCmd() *cobra.Command {
 }
 
 func runInstallCommand(cmd *cobra.Command, args []string) error {
+	return runAgentSyncCommand(cmd, "install")
+}
+
+func runUpdateCommand(cmd *cobra.Command, args []string) error {
+	return runAgentSyncCommand(cmd, "update")
+}
+
+func runAgentSyncCommand(cmd *cobra.Command, mode string) error {
 	agentIDs, err := config.ReadLock(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "No .ai/sync.lock found. Run `agentsync init` first.")
-			return err
+			printInitRequired(cmd, ".ai/sync.lock")
+			return wrapSilentError(err)
 		}
 		return err
 	}
@@ -36,24 +44,31 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", headerStyle.Render(fmt.Sprintf("Installing for %d agents...", len(agentIDs))))
+	intro := fmt.Sprintf("Installing for %d agents...", len(agentIDs))
+	if mode == "update" {
+		intro = fmt.Sprintf("Updating %d agents...", len(agentIDs))
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", headerStyle.Render(intro))
 
-	configuredCount := 0
-
+	validAgents := make([]agentpkg.Agent, 0, len(agentIDs))
+	unknownAgents := make([]string, 0)
 	for _, id := range agentIDs {
 		target, ok := agentpkg.ByID(id)
 		if !ok {
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(id))
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n\n", errStyle.Render("✗"), "Unknown agent in .ai/sync.lock")
+			unknownAgents = append(unknownAgents, id)
 			continue
 		}
+		validAgents = append(validAgents, target)
+	}
 
-		result := runAgentInstall(target)
-		if result.Succeeded() {
-			configuredCount++
-		}
+	for _, id := range unknownAgents {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(id))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n\n", errStyle.Render("✗"), "Unknown agent in .ai/sync.lock")
+	}
 
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(target.Name))
+	summary := runAgentRunner(validAgents, mode)
+	for _, result := range summary.Results {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(result.Agent.Name))
 		for _, step := range result.Steps {
 			icon := okStyle.Render("✓")
 			if step.Status == agentpkg.StepStatusSkipped {
@@ -71,6 +86,10 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", headerStyle.Render(fmt.Sprintf("Done! %d agents configured.", configuredCount)))
+	doneLabel := "agents"
+	if summary.ConfiguredCount == 1 {
+		doneLabel = "agents"
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", headerStyle.Render(fmt.Sprintf("Done! %d %s configured.", summary.ConfiguredCount, doneLabel)))
 	return nil
 }

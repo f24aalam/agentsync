@@ -38,17 +38,21 @@ func TestInstallCommandContinuesOnUnknownAgent(t *testing.T) {
 
 	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["unknown", "codex"]`)
 
-	restore := runAgentInstall
-	t.Cleanup(func() { runAgentInstall = restore })
-	runAgentInstall = func(target agentpkg.Agent) agentpkg.InstallResult {
-		return agentpkg.InstallResult{
-			Agent: target,
-			Steps: []agentpkg.StepResult{
-				{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusOK},
-				{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
-				{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
-			},
+	restore := runAgentRunner
+	t.Cleanup(func() { runAgentRunner = restore })
+	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
+		results := make([]agentpkg.InstallResult, 0, len(targets))
+		for _, target := range targets {
+			results = append(results, agentpkg.InstallResult{
+				Agent: target,
+				Steps: []agentpkg.StepResult{
+					{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusOK},
+					{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
+					{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
+				},
+			})
 		}
+		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: len(results)}
 	}
 
 	command := newInstallCmd()
@@ -76,27 +80,34 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 
 	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["claude-code", "cursor"]`)
 
-	restore := runAgentInstall
-	t.Cleanup(func() { runAgentInstall = restore })
-	runAgentInstall = func(target agentpkg.Agent) agentpkg.InstallResult {
-		if target.ID == "claude-code" {
-			return agentpkg.InstallResult{
+	restore := runAgentRunner
+	t.Cleanup(func() { runAgentRunner = restore })
+	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
+		results := make([]agentpkg.InstallResult, 0, len(targets))
+		configured := 0
+		for _, target := range targets {
+			if target.ID == "claude-code" {
+				results = append(results, agentpkg.InstallResult{
+					Agent: target,
+					Steps: []agentpkg.StepResult{
+						{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusError, Err: errors.New("boom")},
+						{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
+						{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusSkipped},
+					},
+				})
+				continue
+			}
+			results = append(results, agentpkg.InstallResult{
 				Agent: target,
 				Steps: []agentpkg.StepResult{
-					{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusError, Err: errors.New("boom")},
+					{Name: "Guidelines", Target: ".cursor/rules/agentsync.mdc", Status: agentpkg.StepStatusOK},
 					{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
-					{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusSkipped},
+					{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
 				},
-			}
+			})
+			configured++
 		}
-		return agentpkg.InstallResult{
-			Agent: target,
-			Steps: []agentpkg.StepResult{
-				{Name: "Guidelines", Target: ".cursor/rules/agentsync.mdc", Status: agentpkg.StepStatusOK},
-				{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
-				{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
-			},
-		}
+		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: configured}
 	}
 
 	command := newInstallCmd()
@@ -116,6 +127,44 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(output, "Done! 1 agents configured.") {
 		t.Fatalf("expected one successful agent, got %q", output)
+	}
+}
+
+func TestUpdateCommandUsesUpdatingIntro(t *testing.T) {
+	wd := mustGetwdInstall(t)
+	tempDir := t.TempDir()
+	mustChdirInstall(t, tempDir)
+	defer mustChdirInstall(t, wd)
+
+	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex", "cursor"]`)
+
+	restore := runAgentRunner
+	t.Cleanup(func() { runAgentRunner = restore })
+	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
+		results := make([]agentpkg.InstallResult, 0, len(targets))
+		for _, target := range targets {
+			results = append(results, agentpkg.InstallResult{
+				Agent: target,
+				Steps: []agentpkg.StepResult{
+					{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusOK},
+					{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
+					{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
+				},
+			})
+		}
+		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: len(results)}
+	}
+
+	command := newUpdateCmd()
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+
+	if err := command.RunE(command, nil); err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "Updating 2 agents...") {
+		t.Fatalf("expected updating intro, got %q", stdout.String())
 	}
 }
 
