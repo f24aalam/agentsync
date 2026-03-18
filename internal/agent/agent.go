@@ -21,7 +21,7 @@ var registry = []Agent{
 		ID:             "claude-code",
 		Name:           "Claude Code",
 		GuidelinesFile: "CLAUDE.md",
-		SkillsDir:      ".claude/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -29,7 +29,7 @@ var registry = []Agent{
 		ID:             "cursor",
 		Name:           "Cursor",
 		GuidelinesFile: ".cursor/rules/*.mdc",
-		SkillsDir:      ".cursor/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".cursor/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -37,7 +37,7 @@ var registry = []Agent{
 		ID:             "codex",
 		Name:           "Codex",
 		GuidelinesFile: "AGENTS.md",
-		SkillsDir:      ".codex/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".codex/config.toml",
 		MCPFormat:      MCPFormatTOML,
 	},
@@ -45,7 +45,7 @@ var registry = []Agent{
 		ID:             "gemini-cli",
 		Name:           "Gemini CLI",
 		GuidelinesFile: "GEMINI.md",
-		SkillsDir:      ".gemini/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".gemini/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -53,7 +53,7 @@ var registry = []Agent{
 		ID:             "github-copilot",
 		Name:           "GitHub Copilot",
 		GuidelinesFile: ".github/copilot-instructions.md",
-		SkillsDir:      ".github/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".vscode/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -61,7 +61,7 @@ var registry = []Agent{
 		ID:             "junie",
 		Name:           "Junie",
 		GuidelinesFile: ".junie/guidelines.md",
-		SkillsDir:      ".junie/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".junie/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -69,7 +69,7 @@ var registry = []Agent{
 		ID:             "opencode",
 		Name:           "OpenCode",
 		GuidelinesFile: "AGENTS.md",
-		SkillsDir:      ".opencode/skills/",
+		SkillsDir:      ".agents/skills/",
 		MCPConfig:      ".opencode/opencode.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -78,6 +78,7 @@ var registry = []Agent{
 func All() []Agent {
 	agents := make([]Agent, len(registry))
 	copy(agents, registry)
+
 	return agents
 }
 
@@ -89,4 +90,19 @@ func ByID(id string) (Agent, bool) {
 	}
 
 	return Agent{}, false
+}
+
+// UniqueSkillsDirs returns a deduplicated slice of skill directories from the given agents.
+// Since multiple agents may share the same SkillsDir, this prevents duplicate copying.
+func UniqueSkillsDirs(agents []Agent) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, agent := range agents {
+		if !seen[agent.SkillsDir] {
+			seen[agent.SkillsDir] = true
+			dirs = append(dirs, agent.SkillsDir)
+		}
+	}
+
+	return dirs
 }

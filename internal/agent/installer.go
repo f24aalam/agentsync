@@ -44,6 +44,7 @@ func (r InstallResult) Succeeded() bool {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -52,7 +53,8 @@ func Install(target Agent) InstallResult {
 		Agent: target,
 		Steps: []StepResult{
 			installGuidelines(target),
-			installSkills(target),
+			// Skills installation is handled separately in the runner to avoid duplicates
+			{Name: "Skills", Target: target.SkillsDir, Status: StepStatusSkipped},
 			installMCP(target),
 		},
 	}
@@ -64,6 +66,7 @@ func installGuidelines(target Agent) StepResult {
 	if err != nil {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
+
 	if len(files) == 0 {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusSkipped}
 	}
@@ -95,6 +98,7 @@ func installSkills(target Agent) StepResult {
 		if errors.Is(err, os.ErrNotExist) {
 			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusOK}
 		}
+
 		return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
 	}
 
@@ -102,8 +106,10 @@ func installSkills(target Agent) StepResult {
 		if !entry.IsDir() {
 			continue
 		}
+
 		src := filepath.Join(skillsSourceDir, entry.Name())
 		dst := filepath.Join(target.SkillsDir, entry.Name())
+
 		if err := copyDir(src, dst); err != nil {
 			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
 		}
@@ -118,6 +124,7 @@ func installMCP(target Agent) StepResult {
 		if errors.Is(err, os.ErrNotExist) {
 			return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
 		}
+
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
 	}
 
@@ -142,6 +149,7 @@ func resolveGuidelinesTarget(target Agent) string {
 	if target.ID == "cursor" {
 		return cursorGuidelinesOut
 	}
+
 	return target.GuidelinesFile
 }
 
@@ -151,6 +159,7 @@ func markdownFiles(dir string) ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -159,9 +168,11 @@ func markdownFiles(dir string) ([]string, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
 		}
+
 		files = append(files, filepath.Join(dir, entry.Name()))
 	}
 	slices.Sort(files)
+
 	return files, nil
 }
 
@@ -169,6 +180,7 @@ func writeFileWithParents(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	return os.WriteFile(path, data, 0o644)
 }
 
@@ -190,6 +202,7 @@ func copyDir(src, dst string) error {
 			if err := copyDir(srcPath, dstPath); err != nil {
 				return err
 			}
+
 			continue
 		}
 
@@ -226,6 +239,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+
 	if err := out.Chmod(info.Mode()); err != nil {
 		return err
 	}

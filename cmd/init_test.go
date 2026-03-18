@@ -20,6 +20,7 @@ func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
 	if err := os.MkdirAll(".ai", 0o755); err != nil {
 		t.Fatalf("mkdir .ai: %v", err)
 	}
+
 	if err := os.WriteFile(".ai/sync.lock", []byte(`agents = ["codex"]`), 0o644); err != nil {
 		t.Fatalf("write existing lockfile: %v", err)
 	}
@@ -38,14 +39,17 @@ func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return false, nil
 	}
+
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		t.Fatalf("project name prompt should not run when overwrite is declined")
 		return "", nil
 	}
+
 	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
 		t.Fatalf("import flow should not run when overwrite is declined")
 		return importPlan{}, nil
 	}
+
 	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		t.Fatalf("survey should not run when overwrite is declined")
 		return initAnswers{}, nil
@@ -78,6 +82,7 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	restoreProject := runProjectNamePrompt
 	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
+
 	t.Cleanup(func() {
 		runOverwriteConfirm = restoreOverwrite
 		runProjectNamePrompt = restoreProject
@@ -88,15 +93,19 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return true, nil
 	}
+
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		if defaultName != filepath.Base(tempDir) {
 			t.Fatalf("expected default name %q, got %q", filepath.Base(tempDir), defaultName)
 		}
+
 		return "AgentSync", nil
 	}
+
 	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
 		return importPlan{}, nil
 	}
+
 	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		return initAnswers{
 			ProjectName:    "AgentSync",
@@ -121,13 +130,14 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	assertFileContains(t, ".ai/mcp.toml", "# Example MCP servers.")
 	assertFileContains(t, ".ai/sync.lock", `agents = ["cursor", "codex"]`)
 	assertFileContains(t, ".gitignore", ".cursor/rules/*.mdc")
-	assertFileContains(t, ".gitignore", ".codex/skills/")
+	assertFileContains(t, ".gitignore", ".agents/skills/")
 	assertFileContains(t, ".gitignore", "AGENTS.md")
 
 	output := stdout.String()
 	if !strings.Contains(output, "Creating .ai/") {
 		t.Fatalf("expected summary header, got %q", output)
 	}
+
 	if !strings.Contains(output, ".gitignore") {
 		t.Fatalf("expected gitignore to be included in summary, got %q", output)
 	}
@@ -143,6 +153,7 @@ func TestInitAllowsEmptyAgentSelection(t *testing.T) {
 	restoreProject := runProjectNamePrompt
 	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
+
 	t.Cleanup(func() {
 		runOverwriteConfirm = restoreOverwrite
 		runProjectNamePrompt = restoreProject
@@ -153,12 +164,15 @@ func TestInitAllowsEmptyAgentSelection(t *testing.T) {
 	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
 		return true, nil
 	}
+
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		return "AgentSync", nil
 	}
+
 	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
 		return importPlan{}, nil
 	}
+
 	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
 		return initAnswers{
 			ProjectName:  "AgentSync",
@@ -184,6 +198,7 @@ func mustGetwd(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+
 	return wd
 }
 
@@ -200,6 +215,7 @@ func assertFileContains(t *testing.T, path, want string) {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
+
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
 	}

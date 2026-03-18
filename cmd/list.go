@@ -27,6 +27,7 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 			printInitRequired(cmd, ".ai")
 			return wrapSilentError(err)
 		}
+
 		return err
 	}
 
@@ -57,29 +58,45 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n\n", emptyLabel)
 			return
 		}
+
 		for _, item := range items {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", item)
 		}
+
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	}
 
 	renderSection(fmt.Sprintf("Guidelines (%d)", len(guidelines)), guidelines, "none")
-	renderSection(fmt.Sprintf("Skills (%d)", len(skills)), skills, "none")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render(fmt.Sprintf("Skills (%d) \u2192 .agents/skills/", len(skills))))
+
+	if len(skills) == 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  none\n\n")
+	} else {
+		for _, skill := range skills {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", skill)
+		}
+
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
+	}
 	renderSection(fmt.Sprintf("MCP Servers (%d)", len(servers)), servers, "none")
 
 	agentsTitle := "Agents (sync.lock)"
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render(agentsTitle))
+
 	if !initialized {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  not initialized")
 		return nil
 	}
+
 	if len(agents) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  none")
 		return nil
 	}
+
 	for _, name := range agents {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", name)
 	}
+
 	return nil
 }
 
@@ -89,6 +106,7 @@ func listGuidelineFiles() ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -97,9 +115,11 @@ func listGuidelineFiles() ([]string, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
 		}
+
 		files = append(files, entry.Name())
 	}
 	slices.Sort(files)
+
 	return files, nil
 }
 
@@ -109,6 +129,7 @@ func listSkillDirs() ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -119,6 +140,7 @@ func listSkillDirs() ([]string, error) {
 		}
 	}
 	slices.Sort(dirs)
+
 	return dirs, nil
 }
 
@@ -128,6 +150,7 @@ func listMCPServers() ([]string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -135,7 +158,9 @@ func listMCPServers() ([]string, error) {
 	for name := range cfg.Servers {
 		servers = append(servers, name)
 	}
+
 	slices.Sort(servers)
+
 	return servers, nil
 }
 
@@ -145,6 +170,7 @@ func listSelectedAgents() ([]string, bool, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
+
 		return nil, false, err
 	}
 
@@ -157,5 +183,6 @@ func listSelectedAgents() ([]string, bool, error) {
 		}
 		names = append(names, fmt.Sprintf("%s (unknown)", id))
 	}
+
 	return names, true, nil
 }

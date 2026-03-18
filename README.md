@@ -47,13 +47,13 @@ which records the selected target agents for the project.
 
 | Agent | ID | Guidelines Output | Skills Output | MCP Output |
 | --- | --- | --- | --- | --- |
-| Claude Code | `claude-code` | `CLAUDE.md` | `.claude/skills/` | `.mcp.json` |
-| Cursor | `cursor` | `.cursor/rules/agentsync.mdc` | `.cursor/skills/` | `.cursor/mcp.json` |
-| Codex | `codex` | `AGENTS.md` | `.codex/skills/` | `.codex/config.toml` |
-| Gemini CLI | `gemini-cli` | `GEMINI.md` | `.gemini/skills/` | `.gemini/mcp.json` |
-| GitHub Copilot | `github-copilot` | `.github/copilot-instructions.md` | `.github/skills/` | `.vscode/mcp.json` |
-| Junie | `junie` | `.junie/guidelines.md` | `.junie/skills/` | `.junie/mcp.json` |
-| OpenCode | `opencode` | `AGENTS.md` | `.opencode/skills/` | `.opencode/opencode.json` |
+| Claude Code | `claude-code` | `CLAUDE.md` | `.agents/skills/` | `.mcp.json` |
+| Cursor | `cursor` | `.cursor/rules/agentsync.mdc` | `.agents/skills/` | `.cursor/mcp.json` |
+| Codex | `codex` | `AGENTS.md` | `.agents/skills/` | `.codex/config.toml` |
+| Gemini CLI | `gemini-cli` | `GEMINI.md` | `.agents/skills/` | `.gemini/mcp.json` |
+| GitHub Copilot | `github-copilot` | `.github/copilot-instructions.md` | `.agents/skills/` | `.vscode/mcp.json` |
+| Junie | `junie` | `.junie/guidelines.md` | `.agents/skills/` | `.junie/mcp.json` |
+| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills/` | `.opencode/opencode.json` |
 
 ## Installation
 
@@ -194,7 +194,7 @@ CLAUDE.md
 .cursor/rules/agentsync.mdc
 .codex/config.toml
 .gemini/mcp.json
-.junie/skills/example-skill/
+.agents/skills/example-skill/
 ```
 
 ## MCP Format Handling

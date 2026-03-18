@@ -23,6 +23,7 @@ func TestEnsureDirsCreatesExpectedStructure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", path, err)
 		}
+
 		if !info.IsDir() {
 			t.Fatalf("expected %s to be a directory", path)
 		}
@@ -102,6 +103,7 @@ func TestUpdateGitignoreCreatesEntriesForSelectedAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateGitignore returned error: %v", err)
 	}
+
 	if !updated {
 		t.Fatalf("expected gitignore to be updated")
 	}
@@ -118,7 +120,7 @@ func TestUpdateGitignoreAppendsMissingEntriesOnly(t *testing.T) {
 	defer mustChdir(t, wd)
 
 	cursor, _ := agent.ByID("cursor")
-	if err := os.WriteFile(".gitignore", []byte(".cursor/skills/\n"), 0o644); err != nil {
+	if err := os.WriteFile(".gitignore", []byte(".agents/skills/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
 
@@ -126,6 +128,7 @@ func TestUpdateGitignoreAppendsMissingEntriesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateGitignore returned error: %v", err)
 	}
+
 	if !updated {
 		t.Fatalf("expected gitignore to be updated")
 	}
@@ -135,9 +138,10 @@ func TestUpdateGitignoreAppendsMissingEntriesOnly(t *testing.T) {
 		t.Fatalf("read .gitignore: %v", err)
 	}
 
-	if strings.Count(string(data), ".cursor/skills/") != 1 {
+	if strings.Count(string(data), ".agents/skills/") != 1 {
 		t.Fatalf("expected existing ignore entry to remain unique, got %q", string(data))
 	}
+
 	assertFileContains(t, ".gitignore", ".cursor/rules/*.mdc")
 }
 
@@ -151,9 +155,11 @@ func TestUpdateGitignoreNoEntriesNoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateGitignore returned error: %v", err)
 	}
+
 	if updated {
 		t.Fatalf("expected no update")
 	}
+
 	if _, err := os.Stat(".gitignore"); !os.IsNotExist(err) {
 		t.Fatalf("expected .gitignore to remain absent, stat err=%v", err)
 	}
@@ -165,6 +171,7 @@ func mustGetwd(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+
 	return wd
 }
 
@@ -181,6 +188,7 @@ func assertFileContains(t *testing.T, path, want string) {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
+
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
 	}

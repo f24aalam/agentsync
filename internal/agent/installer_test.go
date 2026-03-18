@@ -27,6 +27,7 @@ func TestInstallGuidelinesMergesAlphabetically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read merged guidelines: %v", err)
 	}
+
 	if string(data) != "A\nB" {
 		t.Fatalf("expected alphabetical merge, got %q", string(data))
 	}
@@ -45,6 +46,7 @@ func TestInstallGuidelinesCursorUsesAgentsyncFile(t *testing.T) {
 	if result.Target != ".cursor/rules/agentsync.mdc" {
 		t.Fatalf("expected cursor target path, got %q", result.Target)
 	}
+
 	assertFileContains(t, ".cursor/rules/agentsync.mdc", "content")
 }
 
@@ -63,8 +65,8 @@ func TestInstallSkillsCopiesNestedFiles(t *testing.T) {
 		t.Fatalf("expected skills install ok, got %+v", result)
 	}
 
-	assertFileContains(t, ".codex/skills/example-skill/SKILL.md", "skill")
-	assertFileContains(t, ".codex/skills/example-skill/assets/data.txt", "nested")
+	assertFileContains(t, ".agents/skills/example-skill/SKILL.md", "skill")
+	assertFileContains(t, ".agents/skills/example-skill/assets/data.txt", "nested")
 }
 
 func TestInstallMCPSkipsWhenMissing(t *testing.T) {
@@ -136,6 +138,7 @@ func mustGetwd(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+
 	return wd
 }
 
@@ -162,6 +165,7 @@ func assertFileContains(t *testing.T, path, want string) {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
+
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
 	}

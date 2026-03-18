@@ -65,11 +65,11 @@ func ScanProject(root string) (ProjectDetection, error) {
 		out.MCPServers = append(out.MCPServers, mcpServers...)
 	}
 
-	legacySkills, err := detectLegacySkills(root)
+	sharedSkills, err := detectSharedSkills(root)
 	if err != nil {
 		return ProjectDetection{}, err
 	}
-	out.Skills = append(out.Skills, legacySkills...)
+	out.Skills = append(out.Skills, sharedSkills...)
 
 	return out, nil
 }
@@ -85,6 +85,7 @@ func detectGuidelines(root string, target agent.Agent) ([]DetectedGuideline, err
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -110,12 +111,14 @@ func detectCursorGuidelines(root string, target agent.Agent) ([]DetectedGuidelin
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, DetectedGuideline{
 			Agent:   target,
 			Path:    path,
 			Content: string(data),
 		})
 	}
+
 	return out, nil
 }
 
@@ -126,6 +129,7 @@ func detectSkills(root string, target agent.Agent) ([]DetectedSkill, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -134,15 +138,18 @@ func detectSkills(root string, target agent.Agent) ([]DetectedSkill, error) {
 		if !entry.IsDir() {
 			continue
 		}
+
 		skillDir := filepath.Join(dir, entry.Name())
 		skillMD := filepath.Join(skillDir, "SKILL.md")
 		data, err := os.ReadFile(skillMD)
+
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return nil, err
 		}
+
 		out = append(out, DetectedSkill{
 			Agent:   target,
 			Name:    entry.Name(),
@@ -161,6 +168,7 @@ func detectLegacySkills(root string) ([]DetectedSkill, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -174,8 +182,10 @@ func detectLegacySkills(root string) ([]DetectedSkill, error) {
 		if !entry.IsDir() {
 			continue
 		}
+
 		skillDir := filepath.Join(dir, entry.Name())
 		skillMD := filepath.Join(skillDir, "SKILL.md")
+
 		data, err := os.ReadFile(skillMD)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -185,10 +195,13 @@ func detectLegacySkills(root string) ([]DetectedSkill, error) {
 					Path:    skillDir,
 					SkillMD: "",
 				})
+
 				continue
 			}
+
 			return nil, err
 		}
+
 		out = append(out, DetectedSkill{
 			Agent:   legacyAgent,
 			Name:    entry.Name(),
@@ -200,13 +213,70 @@ func detectLegacySkills(root string) ([]DetectedSkill, error) {
 	return out, nil
 }
 
+// detectSharedSkills scans the shared .agents/skills directory and returns skills
+// tagged with a shared agent label for backward compatibility during migration.
+func detectSharedSkills(root string) ([]DetectedSkill, error) {
+	dir := filepath.Join(root, ".agents", "skills")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	sharedAgent := agent.Agent{
+		ID:   "agents-shared",
+		Name: "Shared (.agents)",
+	}
+
+	var out []DetectedSkill
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		skillDir := filepath.Join(dir, entry.Name())
+		skillMD := filepath.Join(skillDir, "SKILL.md")
+
+		data, err := os.ReadFile(skillMD)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				out = append(out, DetectedSkill{
+					Agent:   sharedAgent,
+					Name:    entry.Name(),
+					Path:    skillDir,
+					SkillMD: "",
+				})
+
+				continue
+			}
+
+			return nil, err
+		}
+
+		out = append(out, DetectedSkill{
+			Agent:   sharedAgent,
+			Name:    entry.Name(),
+			Path:    skillDir,
+			SkillMD: string(data),
+		})
+	}
+
+	return out, nil
+}
+
 func detectMCP(root string, target agent.Agent) ([]DetectedMCPServer, error) {
 	path := filepath.Join(root, target.MCPConfig)
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -216,17 +286,21 @@ func detectMCP(root string, target agent.Agent) ([]DetectedMCPServer, error) {
 		var payload struct {
 			MCPServers map[string]config.MCPServer `json:"mcpServers"`
 		}
+
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return nil, err
 		}
+
 		servers = payload.MCPServers
 	case agent.MCPFormatTOML:
 		var payload struct {
 			MCPServers map[string]config.MCPServer `toml:"mcp_servers"`
 		}
+
 		if err := toml.Unmarshal(data, &payload); err != nil {
 			return nil, err
 		}
+
 		servers = payload.MCPServers
 	default:
 		return nil, nil
@@ -240,10 +314,12 @@ func detectMCP(root string, target agent.Agent) ([]DetectedMCPServer, error) {
 			Server: normalizeServer(server),
 		})
 	}
+
 	return out, nil
 }
 
 func normalizeServer(server config.MCPServer) config.MCPServer {
 	server.Command = strings.TrimSpace(server.Command)
+
 	return server
 }
