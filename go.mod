@@ -6,7 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/f24aalam/stepflow v0.0.0
+	github.com/f24aalam/stepflow v0.0.0-20260320082623-05d79dd70aae
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -39,5 +39,3 @@ require (
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )
-
-replace github.com/f24aalam/stepflow => ../stepflow
