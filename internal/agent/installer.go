@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/f24aalam/agentsync/internal/config"
 )
 
@@ -133,16 +135,235 @@ func installMCP(target Agent) StepResult {
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
 	}
 
-	data, err := config.RenderMCP(cfg, string(target.MCPFormat))
+	destPaths, err := resolveMCPDestPaths(target)
 	if err != nil {
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
 	}
 
-	if err := writeFileWithParents(target.MCPConfig, data); err != nil {
-		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
+	var firstErr error
+	for _, dest := range destPaths {
+		// Only show the first error in StepResult; still attempt others.
+		if firstErr != nil {
+			continue
+		}
+
+		if strings.TrimSpace(dest) == "" {
+			continue
+		}
+
+		// For now, merge/preserve is implemented for JSON configs.
+		// TOML merge preserves only `[mcp_servers]` entries.
+		if target.MCPFormat == MCPFormatTOML {
+			if err := mergeOrWriteTomlMCP(dest, target, cfg); err != nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if err := mergeOrWriteJSONMCP(dest, target, cfg); err != nil {
+			firstErr = err
+		}
+	}
+
+	if firstErr != nil {
+		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: firstErr}
 	}
 
 	return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusOK}
+}
+
+func resolveMCPDestPaths(target Agent) ([]string, error) {
+	paths := make([]string, 0, 1+len(target.MCPConfigs))
+	if strings.TrimSpace(target.MCPConfig) != "" {
+		paths = append(paths, target.MCPConfig)
+	}
+	paths = append(paths, target.MCPConfigs...)
+
+	// Expand ~ in CLI configs.
+	for i := range paths {
+		p := strings.TrimSpace(paths[i])
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, err
+			}
+			paths[i] = filepath.Join(home, strings.TrimPrefix(p, "~/"))
+		}
+	}
+
+	return paths, nil
+}
+
+func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig) error {
+	// Build managed server entries in the per-agent schema shape.
+	managed := make(map[string]any, len(cfg.Servers))
+	for name, server := range cfg.Servers {
+		managed[name] = renderManagedServerJSON(target, name, server)
+	}
+
+	rootKey, renderRoot := mcpJSONRoot(target)
+
+	// Attempt to merge into existing file.
+	existing, err := os.ReadFile(dest)
+	if err == nil {
+		var root map[string]any
+		if err := json.Unmarshal(existing, &root); err != nil {
+			// If existing JSON can't be parsed, fall back to overwrite.
+			root = renderRoot()
+		}
+
+		existingServers, ok := root[rootKey].(map[string]any)
+		if !ok || existingServers == nil {
+			existingServers = map[string]any{}
+		}
+
+		for name, v := range managed {
+			existingServers[name] = v
+		}
+
+		root[rootKey] = existingServers
+
+		data, err := json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			return err
+		}
+		return writeFileWithParents(dest, data)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	// File doesn't exist: write a fresh root.
+	root := renderRoot()
+	root[rootKey] = managed
+	data, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return writeFileWithParents(dest, data)
+}
+
+func renderManagedServerJSON(target Agent, _ string, server config.MCPServer) any {
+	// Only local/stdio fields are mapped from canonical MCP right now.
+	// Remote/http type fields are handled in a later iteration.
+	switch target.ID {
+	case "opencode":
+		typ := server.Type
+		if strings.TrimSpace(typ) == "" {
+			typ = "local"
+		}
+
+		if typ == "remote" {
+			out := map[string]any{
+				"type":    "remote",
+				"url":     server.URL,
+				"enabled": true,
+			}
+			if len(server.Headers) > 0 {
+				out["headers"] = server.Headers
+			}
+			if server.OAuth != nil {
+				out["oauth"] = map[string]any{
+					"clientId":     server.OAuth.ClientID,
+					"clientSecret": server.OAuth.ClientSecret,
+					"scope":        server.OAuth.Scope,
+				}
+			}
+			return out
+		}
+
+		command := make([]string, 0, 1+len(server.Args))
+		if server.Command != "" {
+			command = append(command, server.Command)
+		}
+		command = append(command, server.Args...)
+
+		out := map[string]any{
+			"type":    "local",
+			"command": command,
+			"enabled": true,
+		}
+		if len(server.Env) > 0 {
+			out["environment"] = server.Env
+		}
+		return out
+
+	case "github-copilot":
+		out := map[string]any{
+			"type":    "stdio",
+			"command": server.Command,
+		}
+		if len(server.Args) > 0 {
+			out["args"] = server.Args
+		}
+		if len(server.Env) > 0 {
+			out["env"] = server.Env
+		}
+		return out
+
+	default:
+		out := map[string]any{
+			"command": server.Command,
+		}
+		if len(server.Args) > 0 {
+			out["args"] = server.Args
+		}
+		if len(server.Env) > 0 {
+			out["env"] = server.Env
+		}
+		return out
+	}
+}
+
+func mcpJSONRoot(target Agent) (rootKey string, renderRoot func() map[string]any) {
+	switch target.ID {
+	case "opencode":
+		return "mcp", func() map[string]any {
+			return map[string]any{
+				"$schema": "https://opencode.ai/config.json",
+				"mcp":     map[string]any{},
+			}
+		}
+	case "github-copilot":
+		return "servers", func() map[string]any {
+			return map[string]any{"servers": map[string]any{}}
+		}
+	default:
+		return "mcpServers", func() map[string]any {
+			return map[string]any{
+				"mcpServers": map[string]any{},
+			}
+		}
+	}
+}
+
+func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig) error {
+	// Merge only `[mcp_servers]` entries; other TOML keys are not preserved.
+	var payload struct {
+		MCPServers map[string]config.MCPServer `toml:"mcp_servers"`
+	}
+
+	existing, err := os.ReadFile(dest)
+	if err == nil {
+		_ = toml.Unmarshal(existing, &payload)
+	}
+
+	if payload.MCPServers == nil {
+		payload.MCPServers = map[string]config.MCPServer{}
+	}
+
+	for name, server := range cfg.Servers {
+		payload.MCPServers[name] = server
+	}
+
+	data, err := config.RenderMCP(config.MCPConfig{Servers: payload.MCPServers}, "toml")
+	if err != nil {
+		return err
+	}
+	return writeFileWithParents(dest, data)
 }
 
 func resolveGuidelinesTarget(target Agent) string {

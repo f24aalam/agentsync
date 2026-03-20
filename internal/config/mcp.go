@@ -7,9 +7,25 @@ import (
 )
 
 type MCPServer struct {
-	Command string            `toml:"command" json:"command"`
-	Args    []string          `toml:"args" json:"args,omitempty"`
+	// Type controls how the MCP connection is established.
+	// For backward compatibility, if Type is empty we'll treat it as "local".
+	Type string `toml:"type" json:"type,omitempty"`
+
+	// Local/stdio fields.
+	Command string   `toml:"command" json:"command,omitempty"`
+	Args    []string `toml:"args" json:"args,omitempty"`
 	Env     map[string]string `toml:"env" json:"env,omitempty"`
+
+	// Remote/http fields.
+	URL     string            `toml:"url" json:"url,omitempty"`
+	Headers map[string]string `toml:"headers" json:"headers,omitempty"`
+	OAuth   *OAuthConfig      `toml:"oauth" json:"oauth,omitempty"`
+}
+
+type OAuthConfig struct {
+	ClientID     string `toml:"clientId" json:"clientId,omitempty"`
+	ClientSecret string `toml:"clientSecret" json:"clientSecret,omitempty"`
+	Scope        string `toml:"scope" json:"scope,omitempty"`
 }
 
 type MCPConfig struct {

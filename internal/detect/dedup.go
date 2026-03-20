@@ -138,7 +138,68 @@ func uniqueMCPVariants(variants []DetectedMCPServer) []DetectedMCPServer {
 }
 
 func mcpSignature(variant DetectedMCPServer) string {
-	return variant.Server.Command + "\x00" + strings.Join(variant.Server.Args, "\x1f")
+	var b strings.Builder
+	typ := strings.TrimSpace(variant.Server.Type)
+	if typ == "" {
+		typ = "local"
+	}
+	b.WriteString(typ)
+	b.WriteString("\x00")
+	b.WriteString(strings.TrimSpace(variant.Server.Command))
+	b.WriteString("\x00")
+	b.WriteString(strings.Join(variant.Server.Args, "\x1f"))
+	b.WriteString("\x00")
+
+	if len(variant.Server.URL) > 0 {
+		b.WriteString("url\x00")
+		b.WriteString(variant.Server.URL)
+		b.WriteString("\x1f")
+	}
+
+	// env
+	if len(variant.Server.Env) > 0 {
+		keys := make([]string, 0, len(variant.Server.Env))
+		for k := range variant.Server.Env {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			b.WriteString(k)
+			b.WriteString("\x1e")
+			b.WriteString(variant.Server.Env[k])
+			b.WriteString("\x1f")
+		}
+		b.WriteString("\x00")
+	}
+
+	// headers
+	if len(variant.Server.Headers) > 0 {
+		keys := make([]string, 0, len(variant.Server.Headers))
+		for k := range variant.Server.Headers {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			b.WriteString(k)
+			b.WriteString("\x1e")
+			b.WriteString(variant.Server.Headers[k])
+			b.WriteString("\x1f")
+		}
+		b.WriteString("\x00")
+	}
+
+	// oauth
+	if variant.Server.OAuth != nil {
+		b.WriteString("oauth\x00")
+		b.WriteString(strings.TrimSpace(variant.Server.OAuth.ClientID))
+		b.WriteString("\x1f")
+		b.WriteString(strings.TrimSpace(variant.Server.OAuth.ClientSecret))
+		b.WriteString("\x1f")
+		b.WriteString(strings.TrimSpace(variant.Server.OAuth.Scope))
+		b.WriteString("\x00")
+	}
+
+	return b.String()
 }
 
 func firstSourceLabel(sources []DetectedGuideline) string {

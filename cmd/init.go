@@ -162,7 +162,18 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 		written = append(written, path)
 	}
 
-	if answers.AddSampleSkill && askSampleSkill {
+	// Gemini CLI (and potentially other agents) may not support native skills.
+	// In that case, never scaffold the sample skill even if the UI toggled it.
+	selectedTargets := selectedAgents(answers.Agents)
+	anyTargetSupportsSkills := false
+	for _, t := range selectedTargets {
+		if t.SkillsSupported {
+			anyTargetSupportsSkills = true
+			break
+		}
+	}
+
+	if answers.AddSampleSkill && askSampleSkill && anyTargetSupportsSkills {
 		path, err := scaffold.CreateSampleSkill()
 		if err != nil {
 			return err
@@ -787,10 +798,61 @@ func wizardSkillVariantOptionLabel(v detect.DetectedSkill) string {
 }
 
 func wizardMCPVariantOptionLabel(v detect.DetectedMCPServer) string {
+	typ := strings.TrimSpace(v.Server.Type)
+	if typ == "" {
+		typ = "local"
+	}
+
 	args := strings.Join(v.Server.Args, ";")
 	args = wizardNoComma(args)
-	cmd := strings.ReplaceAll(strings.TrimSpace(v.Server.Command), ",", ";")
-	return wizardNoComma(v.Agent.ID) + "|" + wizardNoComma(v.Name) + "|" + cmd + "|" + args
+
+	var envPairs string
+	if len(v.Server.Env) > 0 {
+		keys := make([]string, 0, len(v.Server.Env))
+		for k := range v.Server.Env {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		var parts []string
+		for _, k := range keys {
+			parts = append(parts, wizardNoComma(k)+"="+wizardNoComma(v.Server.Env[k]))
+		}
+		envPairs = strings.Join(parts, ";")
+	}
+
+	var headerPairs string
+	if len(v.Server.Headers) > 0 {
+		keys := make([]string, 0, len(v.Server.Headers))
+		for k := range v.Server.Headers {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		var parts []string
+		for _, k := range keys {
+			parts = append(parts, wizardNoComma(k)+"="+wizardNoComma(v.Server.Headers[k]))
+		}
+		headerPairs = strings.Join(parts, ";")
+	}
+
+	var oauthStr string
+	if v.Server.OAuth != nil {
+		oauthStr = "cid=" + wizardNoComma(v.Server.OAuth.ClientID) +
+			";cs=" + wizardNoComma(v.Server.OAuth.ClientSecret) +
+			";scope=" + wizardNoComma(v.Server.OAuth.Scope)
+	}
+
+	cmd := wizardNoComma(strings.TrimSpace(v.Server.Command))
+	url := wizardNoComma(strings.TrimSpace(v.Server.URL))
+
+	// Compose a comma-free label so stepflow's List answer joining stays unambiguous.
+	return wizardNoComma(v.Agent.ID) + "|" + wizardNoComma(v.Name) +
+		"|type=" + wizardNoComma(typ) +
+		"|url=" + url +
+		"|cmd=" + cmd +
+		"|args=" + args +
+		"|env=" + wizardNoComma(envPairs) +
+		"|headers=" + wizardNoComma(headerPairs) +
+		"|oauth=" + wizardNoComma(oauthStr)
 }
 
 func wizardSkillVariantStepKey(skillName string) string {

@@ -11,8 +11,15 @@ type Agent struct {
 	ID             string
 	Name           string
 	GuidelinesFile string
+	// SkillsDir is where this agent expects skills to live.
+	// If SkillsSupported is false, SkillsDir may be ignored by installers/detectors.
 	SkillsDir      string
+	SkillsSupported bool
+	// MCPConfig is the primary MCP config file path used by detectors/handlers.
 	MCPConfig      string
+	// MCPConfigs is an optional list of additional MCP destinations.
+	// Used for agents that need multiple MCP outputs (e.g. Copilot).
+	MCPConfigs     []string
 	MCPFormat      MCPFormat
 }
 
@@ -21,7 +28,8 @@ var registry = []Agent{
 		ID:             "claude-code",
 		Name:           "Claude Code",
 		GuidelinesFile: "CLAUDE.md",
-		SkillsDir:      ".agents/skills/",
+		SkillsDir:      ".claude/skills/",
+		SkillsSupported: true,
 		MCPConfig:      ".mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -29,7 +37,8 @@ var registry = []Agent{
 		ID:             "cursor",
 		Name:           "Cursor",
 		GuidelinesFile: ".cursor/rules/*.mdc",
-		SkillsDir:      ".agents/skills/",
+		SkillsDir:      ".cursor/skills/",
+		SkillsSupported: true,
 		MCPConfig:      ".cursor/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
@@ -38,6 +47,7 @@ var registry = []Agent{
 		Name:           "Codex",
 		GuidelinesFile: "AGENTS.md",
 		SkillsDir:      ".agents/skills/",
+		SkillsSupported: true,
 		MCPConfig:      ".codex/config.toml",
 		MCPFormat:      MCPFormatTOML,
 	},
@@ -45,24 +55,30 @@ var registry = []Agent{
 		ID:             "gemini-cli",
 		Name:           "Gemini CLI",
 		GuidelinesFile: "GEMINI.md",
-		SkillsDir:      ".agents/skills/",
-		MCPConfig:      ".gemini/mcp.json",
+		SkillsDir:      "",
+		SkillsSupported: false,
+		MCPConfig:      ".gemini/settings.json",
 		MCPFormat:      MCPFormatJSON,
 	},
 	{
 		ID:             "github-copilot",
 		Name:           "GitHub Copilot",
-		GuidelinesFile: ".github/copilot-instructions.md",
-		SkillsDir:      ".agents/skills/",
+		// Per your spec, Copilot only needs AGENTS.md for guidelines.
+		GuidelinesFile: "AGENTS.md",
+		SkillsDir:      ".github/skills/",
+		SkillsSupported: true,
+		// Write/read VS Code MCP config for now; install will also support CLI MCP via MCPConfigs.
 		MCPConfig:      ".vscode/mcp.json",
+		MCPConfigs:     []string{"~/.copilot/mcp-config.json"},
 		MCPFormat:      MCPFormatJSON,
 	},
 	{
 		ID:             "junie",
 		Name:           "Junie",
 		GuidelinesFile: ".junie/guidelines.md",
-		SkillsDir:      ".agents/skills/",
-		MCPConfig:      ".junie/mcp.json",
+		SkillsDir:      ".junie/skills/",
+		SkillsSupported: true,
+		MCPConfig:      ".junie/mcp/mcp.json",
 		MCPFormat:      MCPFormatJSON,
 	},
 	{
@@ -70,7 +86,8 @@ var registry = []Agent{
 		Name:           "OpenCode",
 		GuidelinesFile: "AGENTS.md",
 		SkillsDir:      ".agents/skills/",
-		MCPConfig:      ".opencode/opencode.json",
+		SkillsSupported: true,
+		MCPConfig:      "opencode.json",
 		MCPFormat:      MCPFormatJSON,
 	},
 }

@@ -169,26 +169,64 @@ func ImportMCPServers(servers map[string]config.MCPServer) (string, error) {
 			buf.WriteString("\n")
 		}
 		buf.WriteString(fmt.Sprintf("[servers.%s]\n", name))
-		buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
-		if len(server.Args) > 0 {
-			buf.WriteString("args = [")
-			for idx, arg := range server.Args {
-				if idx > 0 {
-					buf.WriteString(", ")
-				}
-				buf.WriteString(fmt.Sprintf("%q", arg))
-			}
-			buf.WriteString("]\n")
+
+		typ := server.Type
+		if strings.TrimSpace(typ) == "" {
+			typ = "local"
 		}
-		if len(server.Env) > 0 {
-			buf.WriteString(fmt.Sprintf("\n[servers.%s.env]\n", name))
-			keys := make([]string, 0, len(server.Env))
-			for key := range server.Env {
-				keys = append(keys, key)
+		buf.WriteString(fmt.Sprintf("type = %q\n", typ))
+
+		if typ == "local" {
+			if strings.TrimSpace(server.Command) != "" {
+				buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
 			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				buf.WriteString(fmt.Sprintf("%s = %q\n", key, server.Env[key]))
+			if len(server.Args) > 0 {
+				buf.WriteString("args = [")
+				for idx, arg := range server.Args {
+					if idx > 0 {
+						buf.WriteString(", ")
+					}
+					buf.WriteString(fmt.Sprintf("%q", arg))
+				}
+				buf.WriteString("]\n")
+			}
+			if len(server.Env) > 0 {
+				buf.WriteString(fmt.Sprintf("\n[servers.%s.env]\n", name))
+				keys := make([]string, 0, len(server.Env))
+				for key := range server.Env {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					buf.WriteString(fmt.Sprintf("%s = %q\n", key, server.Env[key]))
+				}
+			}
+		} else {
+			if strings.TrimSpace(server.URL) != "" {
+				buf.WriteString(fmt.Sprintf("url = %q\n", server.URL))
+			}
+			if len(server.Headers) > 0 {
+				buf.WriteString(fmt.Sprintf("\n[servers.%s.headers]\n", name))
+				keys := make([]string, 0, len(server.Headers))
+				for key := range server.Headers {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					buf.WriteString(fmt.Sprintf("%s = %q\n", key, server.Headers[key]))
+				}
+			}
+			if server.OAuth != nil {
+				buf.WriteString(fmt.Sprintf("\n[servers.%s.oauth]\n", name))
+				if strings.TrimSpace(server.OAuth.ClientID) != "" {
+					buf.WriteString(fmt.Sprintf("clientId = %q\n", server.OAuth.ClientID))
+				}
+				if strings.TrimSpace(server.OAuth.ClientSecret) != "" {
+					buf.WriteString(fmt.Sprintf("clientSecret = %q\n", server.OAuth.ClientSecret))
+				}
+				if strings.TrimSpace(server.OAuth.Scope) != "" {
+					buf.WriteString(fmt.Sprintf("scope = %q\n", server.OAuth.Scope))
+				}
 			}
 		}
 	}
