@@ -1,0 +1,44 @@
+name: Release agentsync
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.0"
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          BIN="agentsync"
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN="agentsync.exe"
+          fi
+
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          go build -o dist/$BIN .
+
+          mv dist/$BIN "dist/agentsync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
