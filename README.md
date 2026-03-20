@@ -57,6 +57,16 @@ which records the selected target agents for the project.
 
 ## Installation
 
+### Linux/macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/f24aalam/agentsync/master/install.sh | bash
+```
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/f24aalam/agentsync/master/install.ps1 | iex
+```
+
 ### Build Locally
 
 ```bash
