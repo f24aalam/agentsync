@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/f24aalam/agentsync/internal/agent"
 	"github.com/f24aalam/agentsync/internal/config"
@@ -78,6 +77,10 @@ func newInitCmd() *cobra.Command {
 }
 
 func runInitCommand(cmd *cobra.Command, args []string) error {
+	// Banner on stderr so it renders before the stepflow TUI (which uses stderr);
+	// stdout may stay buffered until exit, which made the banner appear only after quit.
+	printAgentsyncBanner(cmd.ErrOrStderr())
+
 	existing, err := initTargetsExist()
 	if err != nil {
 		return err
@@ -86,7 +89,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 	if existing {
 		overwrite, err := runOverwriteConfirm(cmd)
 		if err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
+			if errors.Is(err, ErrUserAborted) {
 				printInitCancelled(cmd)
 				return nil
 			}
@@ -109,7 +112,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 
 	projectName, err := runProjectNamePrompt(cmd, defaultProjectName)
 	if err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
+		if errors.Is(err, ErrUserAborted) {
 			printInitCancelled(cmd)
 			return nil
 		}
@@ -123,7 +126,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 	// used by tests.
 	imports, err := runImportFlow(cmd, detect.ProjectDetection{})
 	if err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
+		if errors.Is(err, ErrUserAborted) {
 			printInitCancelled(cmd)
 			return nil
 		}
@@ -145,7 +148,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 
 	answers, err := runInitSurvey(cmd, projectName, askGuidelines, askSampleSkill, askMCP)
 	if err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
+		if errors.Is(err, ErrUserAborted) {
 			printInitCancelled(cmd)
 			return nil
 		}
@@ -216,6 +219,7 @@ func promptOverwriteConfirm(cmd *cobra.Command) (bool, error) {
 	// stepflow is a terminal UI; it doesn't support injecting Cobra's IO
 	// streams. We rely on the default TTY wiring.
 	res, err := stepflow.New().
+		WithAltScreen(false).
 		WithTheme(stepflow.DefaultTheme()).
 		WithSteps(
 			stepflow.Confirm(
@@ -226,7 +230,7 @@ func promptOverwriteConfirm(cmd *cobra.Command) (bool, error) {
 		Run()
 	if err != nil {
 		if errors.Is(err, stepflow.ErrCancelled) {
-			return false, huh.ErrUserAborted
+			return false, ErrUserAborted
 		}
 		return false, err
 	}
@@ -257,6 +261,7 @@ func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {
 		})
 
 	res, err := stepflow.New().
+		WithAltScreen(false).
 		WithTheme(stepflow.DefaultTheme()).
 		WithSteps(
 			stepflow.Text(wizardKeyProjectName, "Project name").
@@ -267,7 +272,7 @@ func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {
 		Run()
 	if err != nil {
 		if errors.Is(err, stepflow.ErrCancelled) {
-			return "", huh.ErrUserAborted
+			return "", ErrUserAborted
 		}
 		return "", err
 	}
@@ -397,188 +402,6 @@ func runImportPrompts(cmd *cobra.Command, detection detect.ProjectDetection) (im
 	return wizardStoredImports, nil
 }
 
-func selectGuidelines(cmd *cobra.Command, groups []detect.GuidelineGroup) ([]importGuideline, error) {
-	if len(groups) == 0 {
-		return nil, nil
-	}
-
-	options := make([]huh.Option[string], 0, len(groups))
-	indexByID := make(map[string]detect.GuidelineGroup)
-	for i, group := range groups {
-		id := fmt.Sprintf("g-%d", i)
-		label := guidelineGroupLabel(group)
-		options = append(options, huh.NewOption(label, id))
-		indexByID[id] = group
-	}
-
-	var selected []string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Existing agent configs detected. Select guidelines to import into core.md").
-				Options(options...).
-				Value(&selected),
-		),
-	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
-
-	if err := form.Run(); err != nil {
-		return nil, err
-	}
-
-	out := make([]importGuideline, 0, len(selected))
-	for _, id := range selected {
-		group, ok := indexByID[id]
-		if !ok {
-			continue
-		}
-		out = append(out, importGuideline{
-			Label:   guidelineGroupLabel(group),
-			Content: group.Content,
-		})
-	}
-	return out, nil
-}
-
-func selectSkills(cmd *cobra.Command, groups []detect.SkillGroup) ([]importSkill, error) {
-	if len(groups) == 0 {
-		return nil, nil
-	}
-
-	options := make([]huh.Option[string], 0, len(groups))
-	groupByID := make(map[string]detect.SkillGroup)
-	for i, group := range groups {
-		id := fmt.Sprintf("s-%d", i)
-		label := group.Name
-		if group.Conflict {
-			label += "  (conflict)"
-		}
-		options = append(options, huh.NewOption(label, id))
-		groupByID[id] = group
-	}
-
-	var selected []string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Select skills to import").
-				Options(options...).
-				Value(&selected),
-		),
-	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
-
-	if err := form.Run(); err != nil {
-		return nil, err
-	}
-
-	out := make([]importSkill, 0, len(selected))
-	for _, id := range selected {
-		group, ok := groupByID[id]
-		if !ok {
-			continue
-		}
-
-		var chosen detect.DetectedSkill
-		if group.Conflict {
-			var err error
-			chosen, err = selectSkillVariant(cmd, group)
-			if err != nil {
-				return nil, err
-			}
-		} else if len(group.Variants) > 0 {
-			chosen = group.Variants[0]
-		}
-
-		if chosen.Name == "" {
-			continue
-		}
-		out = append(out, importSkill{
-			Name:      chosen.Name,
-			SourceDir: chosen.Path,
-		})
-	}
-
-	return out, nil
-}
-
-func selectSkillVariant(cmd *cobra.Command, group detect.SkillGroup) (detect.DetectedSkill, error) {
-	options := make([]huh.Option[string], 0, len(group.Variants))
-	variantsByID := make(map[string]detect.DetectedSkill)
-	for i, variant := range group.Variants {
-		id := fmt.Sprintf("v-%d", i)
-		label := fmt.Sprintf("%s (%s)", variant.Agent.Name, variant.Path)
-		options = append(options, huh.NewOption(label, id))
-		variantsByID[id] = variant
-	}
-
-	var choice string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title(fmt.Sprintf("Select a version for skill %q", group.Name)).
-				Options(options...).
-				Value(&choice),
-		),
-	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
-
-	if err := form.Run(); err != nil {
-		return detect.DetectedSkill{}, err
-	}
-
-	return variantsByID[choice], nil
-}
-
-func selectMCPServers(cmd *cobra.Command, groups []detect.MCPGroup) (map[string]config.MCPServer, error) {
-	if len(groups) == 0 {
-		return nil, nil
-	}
-
-	out := make(map[string]config.MCPServer)
-	for _, group := range groups {
-		var chosen detect.DetectedMCPServer
-		if group.Conflict {
-			var err error
-			chosen, err = selectMCPVariant(cmd, group)
-			if err != nil {
-				return nil, err
-			}
-		} else if len(group.Variants) > 0 {
-			chosen = group.Variants[0]
-		}
-
-		if chosen.Name != "" {
-			out[chosen.Name] = chosen.Server
-		}
-	}
-	return out, nil
-}
-
-func selectMCPVariant(cmd *cobra.Command, group detect.MCPGroup) (detect.DetectedMCPServer, error) {
-	options := make([]huh.Option[string], 0, len(group.Variants))
-	variantsByID := make(map[string]detect.DetectedMCPServer)
-	for i, variant := range group.Variants {
-		id := fmt.Sprintf("m-%d", i)
-		label := fmt.Sprintf("%s (command=%s)", variant.Agent.Name, variant.Server.Command)
-		options = append(options, huh.NewOption(label, id))
-		variantsByID[id] = variant
-	}
-
-	var choice string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title(fmt.Sprintf("Select a version for MCP server %q", group.Name)).
-				Options(options...).
-				Value(&choice),
-		),
-	).WithInput(cmd.InOrStdin()).WithOutput(cmd.ErrOrStderr())
-
-	if err := form.Run(); err != nil {
-		return detect.DetectedMCPServer{}, err
-	}
-
-	return variantsByID[choice], nil
-}
-
 func guidelineGroupLabel(group detect.GuidelineGroup) string {
 	if len(group.Sources) == 0 {
 		return "unknown"
@@ -662,15 +485,6 @@ func applyImports(plan importPlan) ([]importSummaryItem, bool, error) {
 	return imported, importedMCP, nil
 }
 
-func agentOptions() []huh.Option[string] {
-	agents := agent.All()
-	options := make([]huh.Option[string], 0, len(agents))
-	for _, target := range agents {
-		options = append(options, huh.NewOption(target.Name, target.ID))
-	}
-	return options
-}
-
 func selectedAgents(ids []string) []agent.Agent {
 	selected := make([]agent.Agent, 0, len(ids))
 	for _, id := range ids {
@@ -715,8 +529,8 @@ func printInitCancelled(cmd *cobra.Command) {
 }
 
 func printInitSummary(cmd *cobra.Command, written []string) {
-	headerStyle := lipgloss.NewStyle().Bold(true)
-	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
+	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Creating .ai/"))
 	for _, path := range written {
@@ -1141,8 +955,8 @@ func (s *dynamicMCPSelectionStep) NextSteps(completed stepflow.Result) []stepflo
 }
 
 func printImportSummary(cmd *cobra.Command, items []importSummaryItem) {
-	headerStyle := lipgloss.NewStyle().Bold(true)
-	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
+	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Importing existing configs..."))
 	for _, item := range items {

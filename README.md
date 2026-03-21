@@ -140,7 +140,7 @@ Scaffolds `.ai/` and writes `.ai/sync.lock`.
 
 Features:
 
-- interactive TUI powered by `huh`
+- interactive TUI powered by [stepflow](https://github.com/f24aalam/stepflow) (Bubble Tea)
 - safe overwrite confirmation if `.ai/` already exists
 - optional `.gitignore` updates for generated agent files
 - project name detection from the current directory
@@ -252,6 +252,8 @@ directly in the project tree, rather than installing into user home directories.
 
 ## Development
 
+`go.mod` contains `replace github.com/f24aalam/stepflow => ../stepflow` so agentsync builds against the sibling **stepflow** repo in this workspace. That version adds `WithAltScreen(false)`, which keeps the pre-TUI banner visible (the published module uses the alternate screen by default, which hides prior stderr output until exit). If you clone **only** `agentsync`, either check out **stepflow** beside it or remove the `replace` after a published stepflow release includes `WithAltScreen`.
+
 Useful commands:
 
 ```bash
@@ -264,9 +266,8 @@ go vet ./...
 
 - Go
 - `spf13/cobra`
-- `charmbracelet/huh`
 - `charmbracelet/lipgloss`
-- `f24aalam/stepflow` (install conflict prompts)
+- `f24aalam/stepflow` (init wizard and install prompts; Bubble Tea)
 - `BurntSushi/toml`
 
 ## Status

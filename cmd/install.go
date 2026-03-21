@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	agentpkg "github.com/f24aalam/agentsync/internal/agent"
 	"github.com/f24aalam/agentsync/internal/config"
@@ -20,6 +19,7 @@ var runInstallStepflow = defaultRunInstallStepflow
 
 func defaultRunInstallStepflow(steps []stepflow.Step) (stepflow.Result, error) {
 	return stepflow.New().
+		WithAltScreen(false).
 		WithTheme(stepflow.DefaultTheme()).
 		WithSteps(steps...).
 		Run()
@@ -36,6 +36,8 @@ func newInstallCmd() *cobra.Command {
 }
 
 func runInstallCommand(cmd *cobra.Command, args []string) error {
+	printAgentsyncBanner(cmd.ErrOrStderr())
+
 	yes, err := cmd.Flags().GetBool("yes")
 	if err != nil {
 		return err
@@ -50,10 +52,10 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true)
-	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
+	okStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
+	errStyle := lipgloss.NewStyle().Foreground(ThemeGreen).Bold(true)
+	skipStyle := lipgloss.NewStyle().Foreground(ThemeGreenMuted)
 
 	validAgents := make([]agentpkg.Agent, 0, len(agentIDs))
 	unknownAgents := make([]string, 0)
@@ -85,7 +87,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 			res, err := runInstallStepflow(steps)
 			if err != nil {
 				if errors.Is(err, stepflow.ErrCancelled) {
-					return huh.ErrUserAborted
+					return ErrUserAborted
 				}
 				return err
 			}
@@ -109,7 +111,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 
 	summary := runAgentRunner(validAgents, plan, ".")
 	for _, result := range summary.Results {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(result.Agent.Name))
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen).Render(result.Agent.Name))
 		for _, step := range result.Steps {
 			icon := okStyle.Render("✓")
 			if step.Status == agentpkg.StepStatusSkipped {

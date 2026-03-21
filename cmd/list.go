@@ -51,7 +51,7 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
 	renderSection := func(title string, items []string, emptyLabel string) {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render(title))
 		if len(items) == 0 {

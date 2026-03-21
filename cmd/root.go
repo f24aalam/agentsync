@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
+
+// ErrUserAborted is returned when the user cancels an interactive flow (e.g. stepflow).
+var ErrUserAborted = errors.New("agentsync: cancelled by user")
 
 type silentError struct {
 	err error
@@ -34,7 +38,7 @@ func IsSilentError(err error) bool {
 }
 
 func printInitRequired(cmd *cobra.Command, subject string) {
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("Error:")
+	label := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen).Render("Error:")
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s %s not found. Run `agentsync init` first.\n", label, subject)
 }
 
