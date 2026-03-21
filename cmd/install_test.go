@@ -3,12 +3,14 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	agentpkg "github.com/f24aalam/agentsync/internal/agent"
+	stepflow "github.com/f24aalam/stepflow/pkg"
 )
 
 func TestInstallCommandRequiresLockfile(t *testing.T) {
@@ -40,7 +42,7 @@ func TestInstallCommandContinuesOnUnknownAgent(t *testing.T) {
 
 	restore := runAgentRunner
 	t.Cleanup(func() { runAgentRunner = restore })
-	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
+	runAgentRunner = func(targets []agentpkg.Agent, plan agentpkg.InstallPlan, root string) agentpkg.RunSummary {
 		results := make([]agentpkg.InstallResult, 0, len(targets))
 		for _, target := range targets {
 			results = append(results, agentpkg.InstallResult{
@@ -52,7 +54,7 @@ func TestInstallCommandContinuesOnUnknownAgent(t *testing.T) {
 				},
 			})
 		}
-		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: len(results)}
+		return agentpkg.RunSummary{Results: results, ConfiguredCount: len(results)}
 	}
 
 	command := newInstallCmd()
@@ -82,7 +84,7 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 
 	restore := runAgentRunner
 	t.Cleanup(func() { runAgentRunner = restore })
-	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
+	runAgentRunner = func(targets []agentpkg.Agent, plan agentpkg.InstallPlan, root string) agentpkg.RunSummary {
 		results := make([]agentpkg.InstallResult, 0, len(targets))
 		configured := 0
 		for _, target := range targets {
@@ -107,7 +109,7 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 			})
 			configured++
 		}
-		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: configured}
+		return agentpkg.RunSummary{Results: results, ConfiguredCount: configured}
 	}
 
 	command := newInstallCmd()
@@ -130,41 +132,77 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 	}
 }
 
-func TestUpdateCommandUsesUpdatingIntro(t *testing.T) {
+func TestInstallYesFlagSkipsConflictPrompts(t *testing.T) {
 	wd := mustGetwdInstall(t)
 	tempDir := t.TempDir()
 	mustChdirInstall(t, tempDir)
 	defer mustChdirInstall(t, wd)
 
-	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex", "cursor"]`)
+	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex"]`)
+	mustWriteInstallFile(t, ".ai/guidelines/core.md", "g")
+	mustWriteInstallFile(t, "AGENTS.md", "existing")
+
+	restoreSF := runInstallStepflow
+	t.Cleanup(func() { runInstallStepflow = restoreSF })
+	runInstallStepflow = func([]stepflow.Step) (stepflow.Result, error) {
+		return nil, fmt.Errorf("stepflow should not run when --yes")
+	}
 
 	restore := runAgentRunner
 	t.Cleanup(func() { runAgentRunner = restore })
-	runAgentRunner = func(targets []agentpkg.Agent, mode string) agentpkg.RunSummary {
-		results := make([]agentpkg.InstallResult, 0, len(targets))
-		for _, target := range targets {
-			results = append(results, agentpkg.InstallResult{
-				Agent: target,
-				Steps: []agentpkg.StepResult{
-					{Name: "Guidelines", Target: target.GuidelinesFile, Status: agentpkg.StepStatusOK},
-					{Name: "Skills", Target: target.SkillsDir, Status: agentpkg.StepStatusOK},
-					{Name: "MCP", Target: target.MCPConfig, Status: agentpkg.StepStatusOK},
-				},
-			})
+	runAgentRunner = func(targets []agentpkg.Agent, plan agentpkg.InstallPlan, root string) agentpkg.RunSummary {
+		if plan.SkipGuidelines["codex"] {
+			t.Fatalf("expected no skip with --yes, got plan %+v", plan.SkipGuidelines)
 		}
-		return agentpkg.RunSummary{Mode: mode, Results: results, ConfiguredCount: len(results)}
+		return agentpkg.RunSummary{ConfiguredCount: 1}
 	}
 
-	command := newUpdateCmd()
+	command := newInstallCmd()
+	_ = command.Flags().Set("yes", "true")
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
-
 	if err := command.RunE(command, nil); err != nil {
-		t.Fatalf("update returned error: %v", err)
+		t.Fatalf("install: %v", err)
+	}
+}
+
+func TestInstallConflictNoAppliesSkipToPlan(t *testing.T) {
+	wd := mustGetwdInstall(t)
+	tempDir := t.TempDir()
+	mustChdirInstall(t, tempDir)
+	defer mustChdirInstall(t, wd)
+
+	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex"]`)
+	mustWriteInstallFile(t, ".ai/guidelines/core.md", "g")
+	mustWriteInstallFile(t, "AGENTS.md", "existing")
+
+	key := "install/codex/guidelines"
+	restoreSF := runInstallStepflow
+	t.Cleanup(func() { runInstallStepflow = restoreSF })
+	runInstallStepflow = func(steps []stepflow.Step) (stepflow.Result, error) {
+		if len(steps) != 1 {
+			t.Fatalf("expected 1 conflict step, got %d", len(steps))
+		}
+		return stepflow.Result{key: "No"}, nil
 	}
 
-	if !strings.Contains(stdout.String(), "Updating 2 agents...") {
-		t.Fatalf("expected updating intro, got %q", stdout.String())
+	restore := runAgentRunner
+	t.Cleanup(func() { runAgentRunner = restore })
+	runAgentRunner = func(targets []agentpkg.Agent, plan agentpkg.InstallPlan, root string) agentpkg.RunSummary {
+		if !plan.SkipGuidelines["codex"] {
+			t.Fatalf("expected guidelines skip for codex, plan=%+v", plan.SkipGuidelines)
+		}
+		return agentpkg.RunSummary{ConfiguredCount: 1}
+	}
+
+	command := newInstallCmd()
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	if err := command.RunE(command, nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Installing for 1 agents...") {
+		t.Fatalf("expected installing intro, got %q", stdout.String())
 	}
 }
 

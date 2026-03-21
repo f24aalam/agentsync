@@ -123,7 +123,7 @@ Example:
 ### 4. Re-sync After Changes
 
 ```bash
-./agentsync update
+./agentsync install
 ```
 
 ### 5. Inspect What `agentsync` Sees
@@ -156,16 +156,23 @@ Behavior:
 - parses `.ai/mcp.toml` and renders JSON or TOML depending on the target agent
 - continues installing remaining agents even if one agent fails
 
-### `agentsync update`
+When a target file or directory **already has content** and `agentsync` would write there, you get an interactive prompt (via [stepflow](https://github.com/f24aalam/stepflow)) per category:
 
-Runs the same install pipeline again with an update-oriented intro message.
+- **Guidelines** — per agent (e.g. existing `AGENTS.md`, Cursor rules file)
+- **Skills** — once per shared output directory (e.g. `.agents/skills/` used by several agents), listing which agent IDs share it
+- **MCP** — per agent if any of that agent’s MCP config paths already exist
 
-Use it after modifying:
+Answering **No** (default) **skips** that step; **Yes** overwrites or merges as usual. If there is nothing to generate from `.ai/` for a category, no prompt is shown for that category.
 
-- guidelines
-- skills
-- MCP server config
-- selected agent targets
+Non-interactive / CI:
+
+```bash
+agentsync install --yes
+# or
+agentsync install -y
+```
+
+This applies all writes without prompts.
 
 ### `agentsync list`
 
@@ -259,6 +266,7 @@ go vet ./...
 - `spf13/cobra`
 - `charmbracelet/huh`
 - `charmbracelet/lipgloss`
+- `f24aalam/stepflow` (install conflict prompts)
 - `BurntSushi/toml`
 
 ## Status
@@ -267,7 +275,6 @@ The CLI is functional end to end:
 
 - `init`
 - `install`
-- `update`
 - `list`
 
 The current implementation focuses on a clean local-project workflow with deterministic generated outputs and test coverage for the core sync pipeline.

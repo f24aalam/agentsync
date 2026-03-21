@@ -18,7 +18,7 @@ func TestInstallGuidelinesMergesAlphabetically(t *testing.T) {
 	mustWriteFile(t, ".ai/guidelines/ignore.txt", "X")
 
 	target, _ := ByID("claude-code")
-	result := installGuidelines(target)
+	result := installGuidelines(target, ".", false)
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected guidelines install ok, got %+v", result)
 	}
@@ -42,7 +42,7 @@ func TestInstallGuidelinesCursorUsesAgentsyncFile(t *testing.T) {
 	mustWriteFile(t, ".ai/guidelines/core.md", "content")
 
 	target, _ := ByID("cursor")
-	result := installGuidelines(target)
+	result := installGuidelines(target, ".", false)
 	if result.Target != ".cursor/rules/agentsync.mdc" {
 		t.Fatalf("expected cursor target path, got %q", result.Target)
 	}
@@ -60,7 +60,7 @@ func TestInstallSkillsCopiesNestedFiles(t *testing.T) {
 	mustWriteFile(t, ".ai/skills/example-skill/assets/data.txt", "nested")
 
 	target, _ := ByID("codex")
-	result := installSkills(target)
+	result := installSkills(target, ".")
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected skills install ok, got %+v", result)
 	}
@@ -76,7 +76,7 @@ func TestInstallMCPSkipsWhenMissing(t *testing.T) {
 	defer mustChdir(t, wd)
 
 	target, _ := ByID("claude-code")
-	result := installMCP(target)
+	result := installMCP(target, ".", false)
 	if result.Status != StepStatusSkipped {
 		t.Fatalf("expected skipped MCP result, got %+v", result)
 	}
@@ -97,11 +97,11 @@ args = ["-y", "@modelcontextprotocol/server-postgres"]
 	jsonAgent, _ := ByID("claude-code")
 	tomlAgent, _ := ByID("codex")
 
-	jsonResult := installMCP(jsonAgent)
+	jsonResult := installMCP(jsonAgent, ".", false)
 	if jsonResult.Status != StepStatusOK {
 		t.Fatalf("expected json MCP result ok, got %+v", jsonResult)
 	}
-	tomlResult := installMCP(tomlAgent)
+	tomlResult := installMCP(tomlAgent, ".", false)
 	if tomlResult.Status != StepStatusOK {
 		t.Fatalf("expected toml MCP result ok, got %+v", tomlResult)
 	}
@@ -126,7 +126,8 @@ func TestInstallAggregatesStepErrors(t *testing.T) {
 		MCPFormat:      MCPFormatJSON,
 	}
 
-	result := Install(target)
+	sk := StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusSkipped}
+	result := InstallAgent(target, ".", sk, NewInstallPlan())
 	if result.Succeeded() {
 		t.Fatalf("expected failed install result")
 	}

@@ -50,21 +50,31 @@ func (r InstallResult) Succeeded() bool {
 	return true
 }
 
-func Install(target Agent) InstallResult {
+// InstallAgent runs guidelines + MCP for one agent; skillsStep is produced by the runner (shared dirs).
+func InstallAgent(target Agent, root string, skillsStep StepResult, plan InstallPlan) InstallResult {
+	if root == "" {
+		root = "."
+	}
+	skipG := plan.SkipGuidelines[target.ID]
+	skipM := plan.SkipMCP[target.ID]
 	return InstallResult{
 		Agent: target,
 		Steps: []StepResult{
-			installGuidelines(target),
-			// Skills installation is handled separately in the runner to avoid duplicates
-			{Name: "Skills", Target: target.SkillsDir, Status: StepStatusSkipped},
-			installMCP(target),
+			installGuidelines(target, root, skipG),
+			skillsStep,
+			installMCP(target, root, skipM),
 		},
 	}
 }
 
-func installGuidelines(target Agent) StepResult {
+func installGuidelines(target Agent, root string, skip bool) StepResult {
 	dest := resolveGuidelinesTarget(target)
-	files, err := markdownFiles(guidelinesSourceDir)
+	destPath := filepath.Join(root, dest)
+	if skip {
+		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusSkipped}
+	}
+
+	files, err := markdownFiles(filepath.Join(root, guidelinesSourceDir))
 	if err != nil {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
@@ -83,19 +93,20 @@ func installGuidelines(target Agent) StepResult {
 	}
 
 	content := strings.Join(parts, "\n")
-	if err := writeFileWithParents(dest, []byte(content)); err != nil {
+	if err := writeFileWithParents(destPath, []byte(content)); err != nil {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
 
 	return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusOK}
 }
 
-func installSkills(target Agent) StepResult {
-	if err := os.MkdirAll(target.SkillsDir, 0o755); err != nil {
+func installSkills(target Agent, root string) StepResult {
+	destDir := filepath.Join(root, target.SkillsDir)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
 	}
 
-	entries, err := os.ReadDir(skillsSourceDir)
+	entries, err := os.ReadDir(filepath.Join(root, skillsSourceDir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusOK}
@@ -109,8 +120,8 @@ func installSkills(target Agent) StepResult {
 			continue
 		}
 
-		src := filepath.Join(skillsSourceDir, entry.Name())
-		dst := filepath.Join(target.SkillsDir, entry.Name())
+		src := filepath.Join(root, skillsSourceDir, entry.Name())
+		dst := filepath.Join(destDir, entry.Name())
 
 		if err := copyDir(src, dst); err != nil {
 			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
@@ -120,8 +131,40 @@ func installSkills(target Agent) StepResult {
 	return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusOK}
 }
 
-func installMCP(target Agent) StepResult {
-	_, err := os.Stat(mcpSourcePath)
+// copySkillTreesFromAI copies each child directory under root/.ai/skills into root/destSkillsDir.
+func copySkillTreesFromAI(root, destSkillsDir string) error {
+	srcRoot := filepath.Join(root, skillsSourceDir)
+	entries, err := os.ReadDir(srcRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	destRoot := filepath.Join(root, destSkillsDir)
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		src := filepath.Join(srcRoot, entry.Name())
+		dst := filepath.Join(destRoot, entry.Name())
+		if err := copyDir(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installMCP(target Agent, root string, skip bool) StepResult {
+	if skip {
+		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
+	}
+
+	mcpPath := filepath.Join(root, mcpSourcePath)
+	_, err := os.Stat(mcpPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
@@ -130,7 +173,7 @@ func installMCP(target Agent) StepResult {
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
 	}
 
-	cfg, err := config.ReadMCP(mcpSourcePath)
+	cfg, err := config.ReadMCP(mcpPath)
 	if err != nil {
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusError, Err: err}
 	}
@@ -151,16 +194,21 @@ func installMCP(target Agent) StepResult {
 			continue
 		}
 
+		destWrite := dest
+		if !filepath.IsAbs(destWrite) {
+			destWrite = filepath.Join(root, destWrite)
+		}
+
 		// For now, merge/preserve is implemented for JSON configs.
 		// TOML merge preserves only `[mcp_servers]` entries.
 		if target.MCPFormat == MCPFormatTOML {
-			if err := mergeOrWriteTomlMCP(dest, target, cfg); err != nil {
+			if err := mergeOrWriteTomlMCP(destWrite, target, cfg); err != nil {
 				firstErr = err
 			}
 			continue
 		}
 
-		if err := mergeOrWriteJSONMCP(dest, target, cfg); err != nil {
+		if err := mergeOrWriteJSONMCP(destWrite, target, cfg); err != nil {
 			firstErr = err
 		}
 	}

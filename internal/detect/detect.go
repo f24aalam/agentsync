@@ -286,13 +286,7 @@ func detectMCP(root string, target agent.Agent) ([]DetectedMCPServer, error) {
 		}
 
 		realPath := p
-		if strings.HasPrefix(p, "~/") {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			realPath = filepath.Join(home, strings.TrimPrefix(p, "~/"))
-		} else if !filepath.IsAbs(p) {
+		if !filepath.IsAbs(p) {
 			realPath = filepath.Join(root, p)
 		}
 

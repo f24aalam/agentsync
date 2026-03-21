@@ -30,7 +30,7 @@ env = { API_KEY = "${MY_KEY}" }
 		SkillsSupported: true,
 	}
 
-	result := installMCP(target)
+	result := installMCP(target, ".", false)
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected OpenCode MCP result ok, got %+v", result)
 	}
@@ -73,7 +73,7 @@ scope = "tools:read"
 		SkillsSupported: true,
 	}
 
-	result := installMCP(target)
+	result := installMCP(target, ".", false)
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected OpenCode MCP result ok, got %+v", result)
 	}
@@ -114,7 +114,7 @@ env = { API_KEY = "value" }
 		SkillsSupported: true,
 	}
 
-	result := installMCP(target)
+	result := installMCP(target, ".", false)
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected Copilot MCP result ok, got %+v", result)
 	}
@@ -163,7 +163,7 @@ args = ["-y", "pkg"]
 		SkillsSupported: true,
 	}
 
-	result := installMCP(target)
+	result := installMCP(target, ".", false)
 	if result.Status != StepStatusOK {
 		t.Fatalf("expected Junie MCP result ok, got %+v", result)
 	}

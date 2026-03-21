@@ -1,109 +1,50 @@
 package agent
 
 import (
-	"errors"
-	"os"
 	"path/filepath"
 )
 
+// SkillDirKey normalizes a skills output path for maps and lookups.
+func SkillDirKey(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Clean(dir)
+}
+
+// RunSummary aggregates per-agent install results.
 type RunSummary struct {
-	Mode            string
 	Results         []InstallResult
 	ConfiguredCount int
 }
 
-func Run(agents []Agent, mode string) RunSummary {
+// Run installs guidelines, shared skills trees, and MCP for each agent according to plan.
+// root is the project root (usually "."); empty root means ".".
+func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
+	if root == "" {
+		root = "."
+	}
+
+	wouldSkills := wouldInstallSkills(root)
+	skillStepsByDir := computeSkillStepsByDir(agents, plan, root, wouldSkills)
+
 	results := make([]InstallResult, 0, len(agents))
 	configuredCount := 0
 
-	// Install skills once for all agents using the shared directory
-	if len(agents) > 0 {
-		sharedDirs := UniqueSkillsDirs(agents)
-		for _, sharedDir := range sharedDirs {
-			if err := os.MkdirAll(sharedDir, 0o755); err != nil {
-				// If we fail to create the shared directory, mark all agents as failed
-				for i := range results {
-					results[i].Steps = append(results[i].Steps, StepResult{
-						Name:   "Skills",
-						Target: sharedDir,
-						Status: StepStatusError,
-						Err:    err,
-					})
-				}
-			} else {
-				// Copy skills to the shared directory
-				entries, err := os.ReadDir(".ai/skills")
-				if err != nil {
-					if !errors.Is(err, os.ErrNotExist) {
-						for i := range results {
-							results[i].Steps = append(results[i].Steps, StepResult{
-								Name:   "Skills",
-								Target: sharedDir,
-								Status: StepStatusError,
-								Err:    err,
-							})
-						}
-					}
-				} else {
-					for _, entry := range entries {
-						if !entry.IsDir() {
-							continue
-						}
-
-						src := filepath.Join(".ai/skills", entry.Name())
-						dst := filepath.Join(sharedDir, entry.Name())
-						if err := copyDir(src, dst); err != nil {
-							for i := range results {
-								results[i].Steps = append(results[i].Steps, StepResult{
-									Name:   "Skills",
-									Target: sharedDir,
-									Status: StepStatusError,
-									Err:    err,
-								})
-							}
-
-							break
-						}
-					}
-					// Mark skills as installed for all agents
-					for i := range results {
-						results[i].Steps = append(results[i].Steps, StepResult{
-							Name:   "Skills",
-							Target: results[i].Agent.SkillsDir,
-							Status: StepStatusOK,
-						})
-					}
-				}
-			}
-		}
-	}
-
-	// Install guidelines and MCP for each agent individually
 	for _, target := range agents {
-		result := Install(target)
-		// Replace the skipped skills step with the actual result from above
-		// Find the skills step and update its status
-		for i, step := range result.Steps {
-			if step.Name == "Skills" && step.Status == StepStatusSkipped {
-				// Look for the corresponding OK status from shared installation
-				for _, res := range results {
-					if res.Agent.ID == target.ID {
-						for _, s := range res.Steps {
-							if s.Name == "Skills" {
-								result.Steps[i] = s
-
-								break
-							}
-						}
-
-						break
-					}
-				}
-
-				break
+		var skillsStep StepResult
+		if !target.SkillsSupported {
+			skillsStep = StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusSkipped}
+		} else {
+			base, ok := skillStepsByDir[SkillDirKey(target.SkillsDir)]
+			if !ok {
+				base = StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusSkipped}
 			}
+			skillsStep = base
+			skillsStep.Target = target.SkillsDir
 		}
 
+		result := InstallAgent(target, root, skillsStep, plan)
 		results = append(results, result)
 		if result.Succeeded() {
 			configuredCount++
@@ -111,8 +52,48 @@ func Run(agents []Agent, mode string) RunSummary {
 	}
 
 	return RunSummary{
-		Mode:            mode,
 		Results:         results,
 		ConfiguredCount: configuredCount,
 	}
+}
+
+func computeSkillStepsByDir(agents []Agent, plan InstallPlan, root string, wouldSkills bool) map[string]StepResult {
+	out := make(map[string]StepResult)
+
+	dirs := uniqueSkillDirsForInstall(agents)
+	for _, dir := range dirs {
+		key := SkillDirKey(dir)
+		if !wouldSkills {
+			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
+			continue
+		}
+		if plan.SkipSkillsDir[key] {
+			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
+			continue
+		}
+		if err := copySkillTreesFromAI(root, dir); err != nil {
+			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusError, Err: err}
+			continue
+		}
+		out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusOK}
+	}
+
+	return out
+}
+
+func uniqueSkillDirsForInstall(agents []Agent) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, a := range agents {
+		if !a.SkillsSupported || a.SkillsDir == "" {
+			continue
+		}
+		key := SkillDirKey(a.SkillsDir)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		dirs = append(dirs, key)
+	}
+	return dirs
 }

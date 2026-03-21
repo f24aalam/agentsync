@@ -5,31 +5,42 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	agentpkg "github.com/f24aalam/agentsync/internal/agent"
 	"github.com/f24aalam/agentsync/internal/config"
+	stepflow "github.com/f24aalam/stepflow/pkg"
 	"github.com/spf13/cobra"
 )
 
 var runAgentRunner = agentpkg.Run
 
+// runInstallStepflow runs stepflow for install conflict resolution (overridable in tests).
+var runInstallStepflow = defaultRunInstallStepflow
+
+func defaultRunInstallStepflow(steps []stepflow.Step) (stepflow.Result, error) {
+	return stepflow.New().
+		WithTheme(stepflow.DefaultTheme()).
+		WithSteps(steps...).
+		Run()
+}
+
 func newInstallCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install synced AI configuration for the selected agents",
 		RunE:  runInstallCommand,
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Overwrite existing agent files without prompting (non-interactive)")
+	return cmd
 }
 
 func runInstallCommand(cmd *cobra.Command, args []string) error {
-	return runAgentSyncCommand(cmd, "install")
-}
+	yes, err := cmd.Flags().GetBool("yes")
+	if err != nil {
+		return err
+	}
 
-func runUpdateCommand(cmd *cobra.Command, args []string) error {
-	return runAgentSyncCommand(cmd, "update")
-}
-
-func runAgentSyncCommand(cmd *cobra.Command, mode string) error {
 	agentIDs, err := config.ReadLock(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -43,12 +54,6 @@ func runAgentSyncCommand(cmd *cobra.Command, mode string) error {
 	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	skipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-
-	intro := fmt.Sprintf("Installing for %d agents...", len(agentIDs))
-	if mode == "update" {
-		intro = fmt.Sprintf("Updating %d agents...", len(agentIDs))
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", headerStyle.Render(intro))
 
 	validAgents := make([]agentpkg.Agent, 0, len(agentIDs))
 	unknownAgents := make([]string, 0)
@@ -66,7 +71,43 @@ func runAgentSyncCommand(cmd *cobra.Command, mode string) error {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n\n", errStyle.Render("✗"), "Unknown agent in .ai/sync.lock")
 	}
 
-	summary := runAgentRunner(validAgents, mode)
+	plan := agentpkg.NewInstallPlan()
+	if !yes {
+		conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
+		if err != nil {
+			return err
+		}
+		if len(conflicts) > 0 {
+			steps := make([]stepflow.Step, 0, len(conflicts))
+			for _, c := range conflicts {
+				steps = append(steps, stepflow.Confirm(c.StepKey, c.Question).Default("No"))
+			}
+			res, err := runInstallStepflow(steps)
+			if err != nil {
+				if errors.Is(err, stepflow.ErrCancelled) {
+					return huh.ErrUserAborted
+				}
+				return err
+			}
+			for _, c := range conflicts {
+				overwrite := res.Bool(c.StepKey)
+				if !overwrite {
+					switch c.Kind {
+					case agentpkg.KindGuidelines:
+						plan.SkipGuidelines[c.AgentID] = true
+					case agentpkg.KindMCP:
+						plan.SkipMCP[c.AgentID] = true
+					case agentpkg.KindSkillsDir:
+						plan.SkipSkillsDir[c.SkillsDir] = true
+					}
+				}
+			}
+		}
+	}
+
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n", headerStyle.Render(fmt.Sprintf("Installing for %d agents...", len(agentIDs))))
+
+	summary := runAgentRunner(validAgents, plan, ".")
 	for _, result := range summary.Results {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Render(result.Agent.Name))
 		for _, step := range result.Steps {
