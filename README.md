@@ -1,5 +1,15 @@
 # agentsync
 
+```text
+ █████╗  ██████╗ ███████╗███╗   ██╗████████╗███████╗██╗   ██╗███╗   ██╗ ██████╗
+██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
+███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ███████╗ ╚████╔╝ ██╔██╗ ██║██║     
+██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ╚════██║  ╚██╔╝  ██║╚██╗██║██║     
+██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ███████║   ██║   ██║ ╚████║╚██████╗
+╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
+                                                                               
+```
+
 Sync AI guidelines, skills, and MCP configuration across coding agents from one source of truth.
 
 `agentsync` lets you define project AI configuration once in a local `.ai/` directory, then generate the agent-specific files different tools expect, such as `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/agentsync.mdc`, `.codex/config.toml`, and more.
