@@ -76,13 +76,9 @@ func TestIntegration_Install_AllAgents_Idempotency(t *testing.T) {
 		env.AssertFileExists(".vscode/mcp.json")
 		env.AssertFileContains(".vscode/mcp.json", `"servers"`)
 		env.AssertFileContains(".vscode/mcp.json", `"postgres"`)
-		// Also verify global ~/.copilot/mcp-config.json
-		if !env.HomeFileExists(".copilot/mcp-config.json") {
-			t.Fatalf("expected global Copilot MCP config to be written to HOME/.copilot/mcp-config.json")
-		}
-		homeCopilot := env.ReadHomeFile(".copilot/mcp-config.json")
-		if !strings.Contains(homeCopilot, "postgres") {
-			t.Fatalf("expected global Copilot MCP to contain postgres, got:\n%s", homeCopilot)
+		// Verify project-scoped Copilot config and ensure global HOME is untouched
+		if env.HomeFileExists(".copilot/mcp-config.json") {
+			t.Fatalf("unexpected global Copilot MCP config written to HOME/.copilot/mcp-config.json in project-scoped install")
 		}
 
 		// 6. Junie
@@ -434,7 +430,7 @@ User edited directly inside the managed block!
 		t.Fatalf("expected genuine conflict detected for user-modified CLAUDE.md, got none!")
 	}
 
-	// --- Step 5: Safe Pruning on Deletion from .ai/ ---
+	// --- Step 5: No Orphan Pruning on Deletion from .ai/ (v1 contract) ---
 	// Add an unmanaged file in destination skill dir
 	unmanagedCustomFile := ".claude/skills/code-review/custom-notes.txt"
 	env.WriteFile(unmanagedCustomFile, "Keep this file safe!")
@@ -448,9 +444,9 @@ User edited directly inside the managed block!
 		t.Fatalf("install after deletion failed: %v", err)
 	}
 
-	// Unmodified managed files should be pruned
-	env.AssertFileNotExists(".claude/skills/code-review/SKILL.md")
-	// Unmanaged user-authored file must be preserved
+	// In v1, destination files are left alone when source is removed from .ai/
+	env.AssertFileExists(".claude/skills/code-review/SKILL.md")
+	// Unmanaged user-authored file must also be preserved
 	env.AssertFileExists(unmanagedCustomFile)
 	env.AssertFileContains(unmanagedCustomFile, "Keep this file safe!")
 }

@@ -177,9 +177,9 @@ model = "unclosed string without end quote
 	}
 }
 
-// 2. Tilde Path Expansion in detectMCP
-// TestRegression_Detect_CopilotHomeTildeExpansion reproduces Issue 3.2:
-// `detectMCP` does not expand "~/" for Copilot global config, searching "./~/.copilot/..." instead of user home.
+// 2. Project Boundary: Global Copilot Home Config Ignored
+// TestRegression_Detect_CopilotHomeTildeExpansion verifies that project-scoped detection
+// does NOT read or import global ~/.copilot/mcp-config.json outside the project root.
 func TestRegression_Detect_CopilotHomeTildeExpansion(t *testing.T) {
 	env := newIntegrationEnv(t)
 
@@ -198,16 +198,10 @@ func TestRegression_Detect_CopilotHomeTildeExpansion(t *testing.T) {
 		t.Fatalf("scan project failed: %v", err)
 	}
 
-	found := false
 	for _, srv := range detection.MCPServers {
 		if srv.Name == "copilot_global_mcp" {
-			found = true
-			break
+			t.Errorf("Project-scoped detect must NOT scan or import global ~/.copilot/mcp-config.json from user HOME!")
 		}
-	}
-
-	if !found {
-		t.Errorf("BUG REPRODUCED (Issue 3.2): detectMCP failed to detect ~/.copilot/mcp-config.json in user HOME directory")
 	}
 }
 
