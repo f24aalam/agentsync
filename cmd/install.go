@@ -164,7 +164,22 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	}
 
-	_ = config.WriteFullLock(lockPath, plan.Lock)
+	failedCount := 0
+	for _, result := range summary.Results {
+		if !result.Succeeded() {
+			failedCount++
+		}
+	}
+
+	if err := config.WriteFullLock(lockPath, plan.Lock); err != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error writing %s: %v\n", lockPath, err)
+		return fmt.Errorf("failed to write %s: %w", lockPath, err)
+	}
+
+	if failedCount > 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(fmt.Sprintf("%d configured, %d failed.", summary.ConfiguredCount, failedCount)))
+		return fmt.Errorf("%d agent(s) failed to configure", failedCount)
+	}
 
 	doneLabel := "agents"
 	if summary.ConfiguredCount == 1 {

@@ -116,8 +116,9 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 
-	if err := command.RunE(command, nil); err != nil {
-		t.Fatalf("install returned error: %v", err)
+	err := command.RunE(command, nil)
+	if err == nil {
+		t.Fatalf("expected non-zero error when an agent failed, got nil")
 	}
 
 	output := stdout.String()
@@ -127,8 +128,39 @@ func TestInstallCommandReportsStepErrorsAndContinues(t *testing.T) {
 	if !strings.Contains(output, ".cursor/rules/agentsync.mdc") {
 		t.Fatalf("expected cursor resolved path in summary, got %q", output)
 	}
-	if !strings.Contains(output, "Done! 1 agents configured.") {
-		t.Fatalf("expected one successful agent, got %q", output)
+	if !strings.Contains(output, "1 configured, 1 failed.") {
+		t.Fatalf("expected '1 configured, 1 failed.' in summary, got %q", output)
+	}
+	if strings.Contains(output, "Done!") {
+		t.Fatalf("unconditional success 'Done!' must not be reported when an agent failed, got %q", output)
+	}
+}
+
+func TestInstallCommand_LockWriteFailure(t *testing.T) {
+	wd := mustGetwdInstall(t)
+	tempDir := t.TempDir()
+	mustChdirInstall(t, tempDir)
+	defer mustChdirInstall(t, wd)
+
+	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex"]`)
+
+	// Make lockfile read-only directory so writing fails
+	_ = os.Remove(".ai/sync.lock")
+	if err := os.Mkdir(".ai/sync.lock", 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	command := newInstallCmd()
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+
+	err := command.RunE(command, nil)
+	if err == nil {
+		t.Fatalf("expected error when writing lockfile fails, got nil")
+	}
+	if strings.Contains(stdout.String(), "Done!") {
+		t.Fatalf("unconditional success 'Done!' must not be reported when lockfile write fails")
 	}
 }
 
