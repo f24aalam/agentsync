@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -344,6 +345,14 @@ func mcpConflict(root string, a Agent) bool {
 	if err != nil {
 		return false
 	}
+	mcpPath := filepath.Join(root, mcpSourcePath)
+	cfg, err := config.ReadMCP(mcpPath)
+	if err != nil || len(cfg.Servers) == 0 {
+		return false
+	}
+
+	lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
+
 	for _, p := range paths {
 		if strings.TrimSpace(p) == "" {
 			continue
@@ -352,10 +361,99 @@ func mcpConflict(root string, a Agent) bool {
 		if !filepath.IsAbs(check) {
 			check = filepath.Join(root, check)
 		}
-		if st, err := os.Stat(check); err == nil && !st.IsDir() {
+		st, err := os.Stat(check)
+		if err != nil || st.IsDir() {
+			continue
+		}
+
+		normKey, _ := filepath.Rel(root, check)
+
+		existingData, err := os.ReadFile(check)
+		if err != nil {
+			continue
+		}
+
+		if a.MCPFormat == MCPFormatTOML {
+			updated, err := updateTomlMCPServers(string(existingData), cfg.Servers)
+			if err != nil {
+				continue
+			}
+			if strings.TrimSpace(updated) == strings.TrimSpace(string(existingData)) {
+				continue
+			}
+			if lock == nil || lock.MCP == nil || len(lock.MCP[normKey]) == 0 {
+				return true
+			}
+			continue
+		}
+
+		// JSON format
+		var rootMap map[string]any
+		if err := json.Unmarshal(existingData, &rootMap); err != nil {
+			continue
+		}
+		rootKey, _ := mcpJSONRoot(a)
+		existingServers, _ := rootMap[rootKey].(map[string]any)
+
+		managed := make(map[string]any, len(cfg.Servers))
+		for name, server := range cfg.Servers {
+			managed[name] = renderManagedServerJSON(a, name, server)
+		}
+
+		allMatch := true
+		for name, val := range managed {
+			curr, exists := existingServers[name]
+			if !exists {
+				allMatch = false
+				break
+			}
+			valBytes, _ := json.Marshal(val)
+			currBytes, _ := json.Marshal(curr)
+			if !bytes.Equal(valBytes, currBytes) {
+				allMatch = false
+				break
+			}
+		}
+
+		if allMatch {
+			hasObsolete := false
+			if lock != nil && lock.MCP != nil && lock.MCP[normKey] != nil {
+				for trackedName := range lock.MCP[normKey] {
+					if _, inConfig := cfg.Servers[trackedName]; !inConfig {
+						if _, exists := existingServers[trackedName]; exists {
+							hasObsolete = true
+							break
+						}
+					}
+				}
+			}
+			if !hasObsolete {
+				continue
+			}
+		}
+
+		if lock == nil || lock.MCP == nil || len(lock.MCP[normKey]) == 0 {
 			return true
 		}
+
+		for name, val := range managed {
+			curr, exists := existingServers[name]
+			if exists {
+				valBytes, _ := json.Marshal(val)
+				currBytes, _ := json.Marshal(curr)
+				if !bytes.Equal(valBytes, currBytes) {
+					if stored, ok := lock.MCP[normKey][name]; ok {
+						if config.HashBytes(currBytes) != stored.Hash {
+							return true
+						}
+					} else {
+						return true
+					}
+				}
+			}
+		}
 	}
+
 	return false
 }
 

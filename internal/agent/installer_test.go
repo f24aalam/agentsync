@@ -587,3 +587,132 @@ func TestSkills_SyncAndSafePruning(t *testing.T) {
 		t.Errorf("SAFETY VIOLATION: root skills dir %s was deleted!", destDir)
 	}
 }
+
+func TestMCP_SyncAndSafePruning_JSONAndTOML(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// 1. JSON test (.mcp.json for Claude Code)
+	claude, _ := ByID("claude-code")
+	lock := config.NewLockFile()
+
+	// Initial configuration with 2 servers: postgres and redis
+	mustWriteFile(t, ".ai/mcp.toml", `
+[servers.postgres]
+command = "pg-cmd"
+args = ["--port", "5432"]
+
+[servers.redis]
+command = "redis-cmd"
+`)
+
+	res := installMCPWithLock(claude, ".", false, lock)
+	if res.Status != StepStatusOK {
+		t.Fatalf("initial json install failed: %+v", res)
+	}
+
+	assertFileContains(t, ".mcp.json", `"postgres"`)
+	assertFileContains(t, ".mcp.json", `"redis"`)
+
+	// User adds an unmanaged server directly in .mcp.json
+	userJSON := `{
+  "mcpServers": {
+    "postgres": { "command": "pg-cmd", "args": ["--port", "5432"] },
+    "redis": { "command": "redis-cmd" },
+    "my_user_tool": { "command": "my-tool" }
+  }
+}`
+	mustWriteFile(t, ".mcp.json", userJSON)
+
+	// Remove redis from .ai/mcp.toml
+	mustWriteFile(t, ".ai/mcp.toml", `
+[servers.postgres]
+command = "pg-cmd"
+args = ["--port", "5432"]
+`)
+
+	res2 := installMCPWithLock(claude, ".", false, lock)
+	if res2.Status != StepStatusOK {
+		t.Fatalf("second json install failed: %+v", res2)
+	}
+
+	// postgres should remain
+	assertFileContains(t, ".mcp.json", `"postgres"`)
+	// unmanaged user tool must remain
+	assertFileContains(t, ".mcp.json", `"my_user_tool"`)
+	// deleted redis should be pruned
+	claudeContent := readFile(t, ".mcp.json")
+	if strings.Contains(claudeContent, `"redis"`) {
+		t.Errorf("expected deleted managed server 'redis' to be pruned from .mcp.json!\nGot:\n%s", claudeContent)
+	}
+
+	// 2. TOML test (.codex/config.toml for Codex)
+	codex, _ := ByID("codex")
+	codexLock := config.NewLockFile()
+
+	initialCodexTOML := `# Developer configuration
+model = "gpt-4o"
+
+[mcp_servers.developer_tool]
+command = "dev-tool"
+
+[mcp_servers.postgres]
+command = "pg-cmd"
+`
+	mustWriteFile(t, ".codex/config.toml", initialCodexTOML)
+
+	// In .ai/mcp.toml: postgres and search
+	mustWriteFile(t, ".ai/mcp.toml", `
+[servers.postgres]
+command = "pg-cmd"
+
+[servers.search]
+command = "search-cmd"
+`)
+
+	resTOML := installMCPWithLock(codex, ".", false, codexLock)
+	if resTOML.Status != StepStatusOK {
+		t.Fatalf("initial toml install failed: %+v", resTOML)
+	}
+
+	assertFileContains(t, ".codex/config.toml", `model = "gpt-4o"`)
+	assertFileContains(t, ".codex/config.toml", "[mcp_servers.developer_tool]")
+	assertFileContains(t, ".codex/config.toml", "[mcp_servers.postgres]")
+	assertFileContains(t, ".codex/config.toml", "[mcp_servers.search]")
+
+	// Remove search from .ai/mcp.toml
+	mustWriteFile(t, ".ai/mcp.toml", `
+[servers.postgres]
+command = "pg-cmd"
+`)
+
+	resTOML2 := installMCPWithLock(codex, ".", false, codexLock)
+	if resTOML2.Status != StepStatusOK {
+		t.Fatalf("second toml install failed: %+v", resTOML2)
+	}
+
+	codexContent := readFile(t, ".codex/config.toml")
+	if !strings.Contains(codexContent, `model = "gpt-4o"`) {
+		t.Errorf("model setting lost from .codex/config.toml")
+	}
+	if !strings.Contains(codexContent, "[mcp_servers.developer_tool]") {
+		t.Errorf("unmanaged developer tool lost from .codex/config.toml")
+	}
+	if !strings.Contains(codexContent, "[mcp_servers.postgres]") {
+		t.Errorf("postgres lost from .codex/config.toml")
+	}
+	if strings.Contains(codexContent, "[mcp_servers.search]") {
+		t.Errorf("expected deleted managed server 'search' to be pruned from .codex/config.toml!\nGot:\n%s", codexContent)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
