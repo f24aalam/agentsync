@@ -9,8 +9,6 @@ require (
 	github.com/spf13/cobra v1.10.2
 )
 
-replace github.com/f24aalam/stepflow => ../stepflow
-
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
