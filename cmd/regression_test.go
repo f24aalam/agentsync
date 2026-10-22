@@ -49,8 +49,98 @@ args = ["hello"]
 	}
 }
 
+// TestRegression_Codex_PreservesCommentsAndFormatting verifies that TOML comments,
+// blank lines, inline comments, and unrelated tables are preserved across repeated installations.
+func TestRegression_Codex_PreservesCommentsAndFormatting(t *testing.T) {
+	env := newIntegrationEnv(t)
+
+	initialContent := `# Project Configuration
+# Maintained by Developer
+
+model = "gpt-4o" # active model
+temperature = 0.2
+
+# Custom developer section
+[custom_section]
+key = "important_value"
+# internal note
+flag = true
+
+# User unmanaged MCP server
+[mcp_servers.existing_tool]
+command = "echo" # shell command
+args = ["hello"]
+
+# Trailing footer section
+[footer_section]
+enabled = false
+`
+	env.WriteFile(".codex/config.toml", initialContent)
+	env.PopulateStandardAI([]string{"codex"})
+
+	// First installation
+	stdout, stderr, err := env.RunInstall("-y")
+	if err != nil {
+		t.Fatalf("first install failed: %v\nStderr: %s\nStdout: %s", err, stderr, stdout)
+	}
+
+	content1 := env.ReadFile(".codex/config.toml")
+
+	// Comments preserved
+	expectedComments := []string{
+		"# Project Configuration",
+		"# Maintained by Developer",
+		"# active model",
+		"# Custom developer section",
+		"# internal note",
+		"# User unmanaged MCP server",
+		"# shell command",
+		"# Trailing footer section",
+	}
+	for _, c := range expectedComments {
+		if !strings.Contains(content1, c) {
+			t.Errorf("expected comment %q preserved in .codex/config.toml!\nContent:\n%s", c, content1)
+		}
+	}
+
+	// Unrelated settings and sections preserved
+	expectedElements := []string{
+		`model = "gpt-4o"`,
+		"temperature = 0.2",
+		"[custom_section]",
+		`key = "important_value"`,
+		"flag = true",
+		"[mcp_servers.existing_tool]",
+		`command = "echo"`,
+		`args = ["hello"]`,
+		"[footer_section]",
+		"enabled = false",
+	}
+	for _, el := range expectedElements {
+		if !strings.Contains(content1, el) {
+			t.Errorf("expected element %q preserved in .codex/config.toml!\nContent:\n%s", el, content1)
+		}
+	}
+
+	// Managed servers added
+	if !strings.Contains(content1, "[mcp_servers.postgres]") {
+		t.Errorf("expected managed [mcp_servers.postgres] in .codex/config.toml!\nContent:\n%s", content1)
+	}
+
+	// Repeated installation must be completely idempotent and produce byte-for-byte identical content
+	stdout2, stderr2, err2 := env.RunInstall("-y")
+	if err2 != nil {
+		t.Fatalf("second install failed: %v\nStderr: %s\nStdout: %s", err2, stderr2, stdout2)
+	}
+
+	content2 := env.ReadFile(".codex/config.toml")
+	if content2 != content1 {
+		t.Errorf("expected repeated install to produce byte-for-byte identical TOML!\nFirst:\n%s\nSecond:\n%s", content1, content2)
+	}
+}
+
 // TestRegression_InvalidTOML_MustNotDestroyCorruptedContent verifies that
-// malformed existing TOML is rejected and preserved without modification.
+// malformed existing TOML is rejected with a meaningful error and preserved byte-for-byte without modification.
 func TestRegression_InvalidTOML_MustNotDestroyCorruptedContent(t *testing.T) {
 	env := newIntegrationEnv(t)
 
@@ -62,13 +152,28 @@ model = "unclosed string without end quote
 	env.PopulateStandardAI([]string{"codex"})
 
 	stdout, stderr, err := env.RunInstall("-y")
-	_ = stdout
 	_ = stderr
 	_ = err
 
+	// Verify a meaningful error is reported
+	if !strings.Contains(stdout, "cannot parse existing TOML config") && !strings.Contains(stdout, "✗") {
+		t.Errorf("expected meaningful error reported for malformed TOML in stdout, got:\n%s", stdout)
+	}
+
+	// Verify the original file remains byte-for-byte unchanged
 	currentContent := env.ReadFile(".codex/config.toml")
 	if currentContent != corruptedTOML {
-		t.Errorf("SAFETY VIOLATION: Malformed .codex/config.toml was modified or destroyed!\nContent:\n%s", currentContent)
+		t.Errorf("SAFETY VIOLATION: Malformed .codex/config.toml was modified or destroyed!\nWant:\n%q\nGot:\n%q", corruptedTOML, currentContent)
+	}
+
+	// Repeated run must also preserve the file byte-for-byte
+	stdout2, _, _ := env.RunInstall("-y")
+	if !strings.Contains(stdout2, "cannot parse existing TOML config") && !strings.Contains(stdout2, "✗") {
+		t.Errorf("expected meaningful error reported on second run for malformed TOML, got:\n%s", stdout2)
+	}
+	currentContent2 := env.ReadFile(".codex/config.toml")
+	if currentContent2 != corruptedTOML {
+		t.Errorf("SAFETY VIOLATION: Malformed .codex/config.toml was modified on repeated run!\nWant:\n%q\nGot:\n%q", corruptedTOML, currentContent2)
 	}
 }
 
@@ -167,8 +272,8 @@ url = "https://mcp.internal.net/sse"
 }
 
 // 5. Silent Overwrite of Corrupted JSON
-// TestRegression_InvalidJSON_MustNotDestroyCorruptedContent reproduces an unsafe behavior:
-// When target JSON contains a syntax error, install silently destroys it with a fresh root instead of aborting/reporting error.
+// TestRegression_InvalidJSON_MustNotDestroyCorruptedContent verifies that
+// when target JSON contains a syntax error, install reports a clear error and preserves the damaged file byte-for-byte.
 func TestRegression_InvalidJSON_MustNotDestroyCorruptedContent(t *testing.T) {
 	env := newIntegrationEnv(t)
 
@@ -177,16 +282,29 @@ func TestRegression_InvalidJSON_MustNotDestroyCorruptedContent(t *testing.T) {
 	env.PopulateStandardAI([]string{"claude-code"})
 
 	stdout, stderr, err := env.RunInstall("-y")
-	_ = stdout
 	_ = stderr
 	_ = err
+
+	// Verify meaningful error is reported
+	if !strings.Contains(stdout, "invalid JSON config") && !strings.Contains(stdout, "cannot parse existing JSON") && !strings.Contains(stdout, "✗") {
+		t.Errorf("expected meaningful error reported for invalid JSON in stdout, got:\n%s", stdout)
+	}
 
 	currentContent := env.ReadFile(".mcp.json")
 
 	// Safe behavior: AgentSync must NOT silently wipe user's damaged file.
-	// It should fail or preserve the corrupted content with an error.
-	if currentContent != corruptedOriginal && !strings.Contains(currentContent, "UNFINISHED EDIT") {
-		t.Errorf("BUG REPRODUCED: AgentSync silently destroyed corrupted .mcp.json and wiped user's salvageable data!\nOverwritten Content:\n%s", currentContent)
+	if currentContent != corruptedOriginal {
+		t.Errorf("SAFETY VIOLATION: AgentSync modified or destroyed corrupted .mcp.json!\nWant:\n%q\nGot:\n%q", corruptedOriginal, currentContent)
+	}
+
+	// Repeated run must also preserve the file byte-for-byte
+	stdout2, _, _ := env.RunInstall("-y")
+	if !strings.Contains(stdout2, "invalid JSON config") && !strings.Contains(stdout2, "cannot parse existing JSON") && !strings.Contains(stdout2, "✗") {
+		t.Errorf("expected meaningful error reported on repeated run for invalid JSON, got:\n%s", stdout2)
+	}
+	currentContent2 := env.ReadFile(".mcp.json")
+	if currentContent2 != corruptedOriginal {
+		t.Errorf("SAFETY VIOLATION: AgentSync modified corrupted .mcp.json on repeated run!\nWant:\n%q\nGot:\n%q", corruptedOriginal, currentContent2)
 	}
 }
 
@@ -373,6 +491,136 @@ Always benchmark performance.
 	content2 := env.ReadFile("CLAUDE.md")
 	if content2 != content1 {
 		t.Errorf("expected repeated sync to produce identical content without duplicate appends!\nFirst:\n%s\nSecond:\n%s", content1, content2)
+	}
+}
+
+// TestRegression_Guidelines_MalformedMarkersPreserveFileAndReportError verifies that
+// malformed guideline markers (missing, reversed, duplicate, nested) return a clear error
+// and preserve the original file byte-for-byte without appending or overwriting.
+func TestRegression_Guidelines_MalformedMarkersPreserveFileAndReportError(t *testing.T) {
+	testCases := []struct {
+		name        string
+		content     string
+		errFragment string
+	}{
+		{
+			name:        "missing end marker",
+			content:     "# Header\n" + agentpkg.ManagedSectionStart + "\nUnfinished managed block\n",
+			errFragment: "missing counterpart managed marker",
+		},
+		{
+			name:        "missing begin marker",
+			content:     "# Header\nOrphaned managed block\n" + agentpkg.ManagedSectionEnd + "\n",
+			errFragment: "missing counterpart managed marker",
+		},
+		{
+			name:        "reversed markers",
+			content:     "# Header\n" + agentpkg.ManagedSectionEnd + "\nReversed block\n" + agentpkg.ManagedSectionStart + "\n",
+			errFragment: "end marker appears before begin marker",
+		},
+		{
+			name: "duplicate begin markers",
+			content: "# Header\n" + agentpkg.ManagedSectionStart + "\nFirst\n" +
+				agentpkg.ManagedSectionStart + "\nSecond\n" + agentpkg.ManagedSectionEnd + "\n",
+			errFragment: "duplicate managed markers",
+		},
+		{
+			name: "duplicate end markers",
+			content: "# Header\n" + agentpkg.ManagedSectionStart + "\nContent\n" +
+				agentpkg.ManagedSectionEnd + "\n" + agentpkg.ManagedSectionEnd + "\n",
+			errFragment: "duplicate managed markers",
+		},
+		{
+			name: "nested markers",
+			content: agentpkg.ManagedSectionStart + "\n" + agentpkg.ManagedSectionStart +
+				"\nNested\n" + agentpkg.ManagedSectionEnd + "\n" + agentpkg.ManagedSectionEnd + "\n",
+			errFragment: "duplicate managed markers",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newIntegrationEnv(t)
+			env.WriteFile("CLAUDE.md", tc.content)
+			env.PopulateStandardAI([]string{"claude-code"})
+
+			stdout, stderr, err := env.RunInstall("-y")
+			_ = stderr
+			_ = err
+
+			// 1. Verify a meaningful error is reported in stdout
+			if !strings.Contains(stdout, tc.errFragment) {
+				t.Errorf("expected error containing %q in stdout, got:\n%s", tc.errFragment, stdout)
+			}
+			if !strings.Contains(stdout, "✗") {
+				t.Errorf("expected error symbol ✗ in stdout, got:\n%s", stdout)
+			}
+
+			// 2. Verify file is byte-for-byte preserved
+			currentContent := env.ReadFile("CLAUDE.md")
+			if currentContent != tc.content {
+				t.Errorf("SAFETY VIOLATION: Malformed CLAUDE.md was modified or overwritten!\nWant:\n%q\nGot:\n%q", tc.content, currentContent)
+			}
+
+			// 3. Repeated install also preserves the file byte-for-byte
+			stdout2, _, _ := env.RunInstall("-y")
+			if !strings.Contains(stdout2, tc.errFragment) {
+				t.Errorf("expected error containing %q on repeated install, got:\n%s", tc.errFragment, stdout2)
+			}
+			currentContent2 := env.ReadFile("CLAUDE.md")
+			if currentContent2 != tc.content {
+				t.Errorf("SAFETY VIOLATION: Malformed CLAUDE.md was modified on repeated install!\nWant:\n%q\nGot:\n%q", tc.content, currentContent2)
+			}
+		})
+	}
+}
+
+// TestRegression_Guidelines_PreserveExactUserWhitespaceAndFormatting verifies that
+// all bytes outside the managed markers, including whitespace, indentation, tabs, and newlines,
+// are preserved exactly without stripping or modification.
+func TestRegression_Guidelines_PreserveExactUserWhitespaceAndFormatting(t *testing.T) {
+	env := newIntegrationEnv(t)
+
+	// Pre-existing user content with exact whitespace, multiple newlines, and tabs
+	userBefore := "# Team Rules\n\n   Indented paragraph with spaces.  \n\n\n"
+	userAfter := "\n\n## Footer Notes\n\tTab-indented text\n   Trailing spaces on line   \n"
+	initialContent := userBefore + agentpkg.ManagedSectionStart + "\nOld guidelines\n" + agentpkg.ManagedSectionEnd + userAfter
+
+	env.WriteFile("CLAUDE.md", initialContent)
+	env.PopulateStandardAI([]string{"claude-code"})
+
+	// First installation
+	stdout, stderr, err := env.RunInstall("-y")
+	if err != nil {
+		t.Fatalf("install failed: %v\nStderr: %s\nStdout: %s", err, stderr, stdout)
+	}
+
+	content1 := env.ReadFile("CLAUDE.md")
+
+	// Verify exact byte preservation before start marker
+	if !strings.HasPrefix(content1, userBefore) {
+		t.Fatalf("expected exact prefix byte preservation:\nWant:\n%q\nGot:\n%q", userBefore, content1[:len(userBefore)])
+	}
+
+	// Verify exact byte preservation after end marker
+	if !strings.HasSuffix(content1, userAfter) {
+		t.Fatalf("expected exact suffix byte preservation:\nWant:\n%q\nGot:\n%q", userAfter, content1[len(content1)-len(userAfter):])
+	}
+
+	// Verify managed section updated
+	if !strings.Contains(content1, "Project Core Guidelines") {
+		t.Fatalf("expected synced guidelines inside managed block")
+	}
+
+	// Second install: repeated sync must produce 100% byte-for-byte identical file
+	stdout2, stderr2, err2 := env.RunInstall("-y")
+	if err2 != nil {
+		t.Fatalf("second install failed: %v\nStderr: %s\nStdout: %s", err2, stderr2, stdout2)
+	}
+
+	content2 := env.ReadFile("CLAUDE.md")
+	if content2 != content1 {
+		t.Fatalf("expected repeated install to be byte-for-byte identical!\nFirst:\n%q\nSecond:\n%q", content1, content2)
 	}
 }
 

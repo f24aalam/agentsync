@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,7 +113,10 @@ func installGuidelines(target Agent, root string, skip bool) StepResult {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
 
-	finalContent := injectManagedGuidelines(existingContent, mergedContent)
+	finalContent, err := injectManagedGuidelines(existingContent, mergedContent)
+	if err != nil {
+		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
+	}
 
 	if err := writeFileWithParents(destPath, []byte(finalContent)); err != nil {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
@@ -123,39 +125,70 @@ func installGuidelines(target Agent, root string, skip bool) StepResult {
 	return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusOK}
 }
 
-func injectManagedGuidelines(existingContent, managedContent string) string {
+func injectManagedGuidelines(existingContent, managedContent string) (string, error) {
 	managedBlock := ManagedSectionStart + "\n" + managedContent + "\n" + ManagedSectionEnd
 
-	startIdx := strings.Index(existingContent, ManagedSectionStart)
-	endIdx := strings.Index(existingContent, ManagedSectionEnd)
+	countBegin := strings.Count(existingContent, ManagedSectionStart)
+	countEnd := strings.Count(existingContent, ManagedSectionEnd)
 
-	if startIdx != -1 && endIdx != -1 && endIdx >= startIdx {
+	// Detect malformed markers:
+	if countBegin > 1 || countEnd > 1 {
+		return "", fmt.Errorf("malformed guidelines: duplicate managed markers found (begin=%d, end=%d)", countBegin, countEnd)
+	}
+	if (countBegin == 1 && countEnd == 0) || (countBegin == 0 && countEnd == 1) {
+		return "", fmt.Errorf("malformed guidelines: missing counterpart managed marker (begin=%d, end=%d)", countBegin, countEnd)
+	}
+
+	if countBegin == 1 && countEnd == 1 {
+		startIdx := strings.Index(existingContent, ManagedSectionStart)
+		endIdx := strings.Index(existingContent, ManagedSectionEnd)
+
+		if endIdx < startIdx {
+			return "", fmt.Errorf("malformed guidelines: end marker appears before begin marker")
+		}
+
+		// Exact byte preservation of user content outside markers.
+		// Preserve everything before the start marker exactly.
 		before := existingContent[:startIdx]
-		after := existingContent[endIdx+len(ManagedSectionEnd):]
+		afterStart := endIdx + len(ManagedSectionEnd)
 
-		beforeTrimmed := strings.TrimSpace(before)
-		afterTrimmed := strings.TrimSpace(after)
+		// Consume the newline immediately following the end marker if present,
+		// because managedBlock ends with its own newline.
+		if afterStart < len(existingContent) && existingContent[afterStart] == '\r' {
+			afterStart++
+		}
+		if afterStart < len(existingContent) && existingContent[afterStart] == '\n' {
+			afterStart++
+		}
+
+		after := existingContent[afterStart:]
 
 		var b strings.Builder
-		if beforeTrimmed != "" {
-			b.WriteString(beforeTrimmed)
-			b.WriteString("\n\n")
-		}
+		b.WriteString(before)
 		b.WriteString(managedBlock)
-		if afterTrimmed != "" {
-			b.WriteString("\n\n")
-			b.WriteString(afterTrimmed)
-		}
 		b.WriteString("\n")
-		return b.String()
+		b.WriteString(after)
+		return b.String(), nil
 	}
 
-	existingTrimmed := strings.TrimSpace(existingContent)
-	if existingTrimmed == "" {
-		return managedBlock + "\n"
+	// No markers present:
+	if len(existingContent) == 0 {
+		return managedBlock + "\n", nil
 	}
 
-	return existingTrimmed + "\n\n" + managedBlock + "\n"
+	// Adoption of existing file without markers:
+	// Preserve existing user content byte-for-byte, ensuring separation with newline.
+	var b strings.Builder
+	b.WriteString(existingContent)
+	if !strings.HasSuffix(existingContent, "\n") {
+		b.WriteString("\n")
+	}
+	if !strings.HasSuffix(existingContent, "\n\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString(managedBlock)
+	b.WriteString("\n")
+	return b.String(), nil
 }
 
 func installSkills(target Agent, root string) StepResult {
@@ -446,42 +479,254 @@ func mcpJSONRoot(target Agent) (rootKey string, renderRoot func() map[string]any
 }
 
 func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig) error {
-	var root map[string]any
-
 	existing, err := os.ReadFile(dest)
-	if err == nil {
-		if _, err := toml.Decode(string(existing), &root); err != nil {
-			return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	if root == nil {
-		root = make(map[string]any)
-	}
-
-	existingServers, ok := root["mcp_servers"].(map[string]any)
-	if !ok || existingServers == nil {
-		existingServers = make(map[string]any)
-	}
-
-	for name, server := range cfg.Servers {
-		cleanServer := server
-		if len(cleanServer.Env) == 0 {
-			cleanServer.Env = nil
+		rendered := renderTomlMCPServers(cfg.Servers)
+		if !strings.HasSuffix(rendered, "\n") {
+			rendered += "\n"
 		}
-		existingServers[name] = cleanServer
+		return writeFileWithParents(dest, []byte(rendered))
 	}
 
-	root["mcp_servers"] = existingServers
-
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
-		return err
+	updated, err := updateTomlMCPServers(string(existing), cfg.Servers)
+	if err != nil {
+		return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
 	}
 
-	return writeFileWithParents(dest, buf.Bytes())
+	return writeFileWithParents(dest, []byte(updated))
+}
+
+func updateTomlMCPServers(existingContent string, servers map[string]config.MCPServer) (string, error) {
+	// 1. Validate that the existing content is syntactically valid TOML
+	var check map[string]any
+	if _, err := toml.Decode(existingContent, &check); err != nil {
+		return "", fmt.Errorf("cannot parse existing TOML config: %w", err)
+	}
+
+	// 2. Parse existing content into structural sections
+	rawLines := strings.Split(strings.ReplaceAll(existingContent, "\r\n", "\n"), "\n")
+	type tomlSection struct {
+		header string
+		lines  []string
+	}
+
+	var sections []tomlSection
+	current := tomlSection{header: ""}
+
+	for _, line := range rawLines {
+		if header, isTable := parseTOMLTableHeader(line); isTable {
+			// Find trailing comments and blank lines in current.lines that precede this header
+			splitIdx := len(current.lines)
+			for splitIdx > 0 {
+				prevLine := strings.TrimSpace(current.lines[splitIdx-1])
+				if strings.HasPrefix(prevLine, "#") || prevLine == "" {
+					splitIdx--
+				} else {
+					break
+				}
+			}
+
+			// If current is section 0 and splitIdx == 0, keep all comments at the top of the file in section 0
+			// so they are never lost even if the first table is a managed table.
+			if current.header == "" && splitIdx == 0 {
+				sections = append(sections, current)
+				current = tomlSection{header: header, lines: []string{line}}
+			} else {
+				leadingForNext := current.lines[splitIdx:]
+				current.lines = current.lines[:splitIdx]
+				sections = append(sections, current)
+
+				newLines := make([]string, 0, len(leadingForNext)+1)
+				newLines = append(newLines, leadingForNext...)
+				newLines = append(newLines, line)
+				current = tomlSection{header: header, lines: newLines}
+			}
+		} else {
+			current.lines = append(current.lines, line)
+		}
+	}
+	sections = append(sections, current)
+
+	// 3. Render the managed servers
+	renderedManaged := strings.TrimRight(renderTomlMCPServers(servers), "\r\n")
+
+	// 4. Identify which sections are managed by AgentSync
+	firstManagedIdx := -1
+	for idx, sec := range sections {
+		srvName := mcpServerNameForTable(sec.header)
+		if srvName != "" {
+			if _, isManaged := servers[srvName]; isManaged {
+				if firstManagedIdx == -1 {
+					firstManagedIdx = idx
+				}
+			}
+		} else if isRootMCPHeader(sec.header) {
+			if firstManagedIdx == -1 {
+				firstManagedIdx = idx
+			}
+		}
+	}
+
+	// 5. Reconstruct document lines
+	var outLines []string
+	inserted := false
+
+	for idx, sec := range sections {
+		srvName := mcpServerNameForTable(sec.header)
+		isManaged := false
+		if srvName != "" {
+			_, isManaged = servers[srvName]
+		} else if isRootMCPHeader(sec.header) {
+			isManaged = true
+		}
+
+		if isManaged {
+			if idx == firstManagedIdx && !inserted {
+				if len(renderedManaged) > 0 {
+					if len(outLines) > 0 && strings.TrimSpace(outLines[len(outLines)-1]) != "" {
+						outLines = append(outLines, "")
+					}
+					outLines = append(outLines, strings.Split(renderedManaged, "\n")...)
+				}
+				inserted = true
+			}
+			continue
+		}
+
+		outLines = append(outLines, sec.lines...)
+	}
+
+	// If no previous managed section was found in the file, append the new servers
+	if !inserted && len(renderedManaged) > 0 {
+		for len(outLines) > 0 && strings.TrimSpace(outLines[len(outLines)-1]) == "" {
+			outLines = outLines[:len(outLines)-1]
+		}
+		if len(outLines) > 0 {
+			outLines = append(outLines, "")
+		}
+		outLines = append(outLines, strings.Split(renderedManaged, "\n")...)
+	}
+
+	result := strings.Join(outLines, "\n")
+	if !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+
+	// 6. Validate the final result with toml.Decode
+	var finalCheck map[string]any
+	if _, err := toml.Decode(result, &finalCheck); err != nil {
+		return "", fmt.Errorf("failed to generate valid TOML: %w", err)
+	}
+
+	return result, nil
+}
+
+func parseTOMLTableHeader(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") {
+		return "", false
+	}
+	stripped := stripInlineComment(trimmed)
+	stripped = strings.TrimSpace(stripped)
+
+	if strings.HasPrefix(stripped, "[") && strings.HasSuffix(stripped, "]") &&
+		!strings.HasPrefix(stripped, "[[") && !strings.HasSuffix(stripped, "]]") {
+		inner := strings.TrimSpace(stripped[1 : len(stripped)-1])
+		if inner != "" {
+			return inner, true
+		}
+	}
+	return "", false
+}
+
+func stripInlineComment(s string) string {
+	inQuote := false
+	var quoteChar rune
+	for i, r := range s {
+		if inQuote {
+			if r == quoteChar {
+				inQuote = false
+			}
+		} else {
+			if r == '"' || r == '\'' {
+				inQuote = true
+				quoteChar = r
+			} else if r == '#' {
+				return s[:i]
+			}
+		}
+	}
+	return s
+}
+
+func normalizeTOMLTableName(name string) string {
+	name = strings.ReplaceAll(name, "\"", "")
+	name = strings.ReplaceAll(name, "'", "")
+	return strings.TrimSpace(name)
+}
+
+func isRootMCPHeader(header string) bool {
+	norm := normalizeTOMLTableName(header)
+	return norm == "mcp_servers"
+}
+
+func mcpServerNameForTable(tableName string) string {
+	norm := normalizeTOMLTableName(tableName)
+	if norm == "mcp_servers" {
+		return ""
+	}
+	if strings.HasPrefix(norm, "mcp_servers.") {
+		rest := strings.TrimPrefix(norm, "mcp_servers.")
+		parts := strings.Split(rest, ".")
+		return parts[0]
+	}
+	return ""
+}
+
+func renderTomlMCPServers(servers map[string]config.MCPServer) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	var buf strings.Builder
+	for i, name := range names {
+		server := servers[name]
+		if i > 0 {
+			buf.WriteString("\n")
+		}
+		buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", name))
+		buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
+		if len(server.Args) > 0 {
+			buf.WriteString("args = [")
+			for idx, arg := range server.Args {
+				if idx > 0 {
+					buf.WriteString(", ")
+				}
+				buf.WriteString(fmt.Sprintf("%q", arg))
+			}
+			buf.WriteString("]\n")
+		}
+		if len(server.Env) > 0 {
+			buf.WriteString(fmt.Sprintf("\n[mcp_servers.%s.env]\n", name))
+			keys := make([]string, 0, len(server.Env))
+			for key := range server.Env {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			for _, key := range keys {
+				buf.WriteString(fmt.Sprintf("%s = %q\n", key, server.Env[key]))
+			}
+		}
+	}
+	return buf.String()
 }
 
 func resolveGuidelinesTarget(target Agent) string {

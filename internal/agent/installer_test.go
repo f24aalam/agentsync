@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/f24aalam/agentsync/internal/config"
 )
 
 func TestInstallGuidelinesMergesAlphabetically(t *testing.T) {
@@ -170,5 +172,205 @@ func assertFileContains(t *testing.T, path, want string) {
 
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
+	}
+}
+
+func TestInjectManagedGuidelines_MalformedMarkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "missing end marker",
+			content: "# Header\n" + ManagedSectionStart + "\nManaged content without end",
+			wantErr: "missing counterpart",
+		},
+		{
+			name:    "missing begin marker",
+			content: "# Header\nManaged content without start\n" + ManagedSectionEnd,
+			wantErr: "missing counterpart",
+		},
+		{
+			name:    "reversed markers",
+			content: "# Header\n" + ManagedSectionEnd + "\nInside\n" + ManagedSectionStart,
+			wantErr: "end marker appears before begin marker",
+		},
+		{
+			name:    "duplicate begin markers",
+			content: ManagedSectionStart + "\nFirst\n" + ManagedSectionStart + "\nSecond\n" + ManagedSectionEnd,
+			wantErr: "duplicate managed markers",
+		},
+		{
+			name:    "duplicate end markers",
+			content: ManagedSectionStart + "\nContent\n" + ManagedSectionEnd + "\n" + ManagedSectionEnd,
+			wantErr: "duplicate managed markers",
+		},
+		{
+			name:    "nested markers",
+			content: ManagedSectionStart + "\n" + ManagedSectionStart + "\nInner\n" + ManagedSectionEnd + "\n" + ManagedSectionEnd,
+			wantErr: "duplicate managed markers",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := injectManagedGuidelines(tc.content, "new managed content")
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestInjectManagedGuidelines_PreservesExactUserBytes(t *testing.T) {
+	// Pre-existing user content with exact whitespace, indentation, and newlines
+	userBefore := "# Team Rules\n\n   Indented paragraph with spaces.  \n\n\n"
+	userAfter := "\n\n## Footer Notes\n\tTab-indented text\n   Trailing spaces on line   \n"
+	initialContent := userBefore + ManagedSectionStart + "\nOld guidelines\n" + ManagedSectionEnd + userAfter
+
+	newManaged := "New managed guidelines v1"
+	updated, err := injectManagedGuidelines(initialContent, newManaged)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify user content before markers is preserved byte-for-byte
+	if !strings.HasPrefix(updated, userBefore) {
+		t.Fatalf("expected exact prefix byte preservation:\nwant: %q\ngot:  %q", userBefore, updated[:len(userBefore)])
+	}
+
+	// Verify user content after markers is preserved byte-for-byte
+	if !strings.HasSuffix(updated, userAfter) {
+		t.Fatalf("expected exact suffix byte preservation:\nwant: %q\ngot:  %q", userAfter, updated[len(updated)-len(userAfter):])
+	}
+
+	// Repeated call with same managed content must be byte-for-byte identical
+	repeated, err := injectManagedGuidelines(updated, newManaged)
+	if err != nil {
+		t.Fatalf("unexpected error on repeated inject: %v", err)
+	}
+	if repeated != updated {
+		t.Fatalf("expected idempotent output on repeated run:\nFirst:\n%q\nSecond:\n%q", updated, repeated)
+	}
+}
+
+func TestUpdateTomlMCPServers_PreservesCommentsAndFormatting(t *testing.T) {
+	initialTOML := `# Codex Global Configuration
+# Maintained by DevOps
+
+model = "gpt-4o" # default model
+temperature = 0.2
+
+# Custom developer tools section
+[custom_section]
+key = "important_value"
+# internal comment inside custom_section
+flag = true
+
+# User unmanaged MCP server
+[mcp_servers.my_custom_tool]
+command = "my-tool"
+args = ["--verbose"]
+
+# Old managed server
+[mcp_servers.postgres]
+command = "old-pg"
+
+# Trailing footer section
+[footer_section]
+enabled = false
+`
+
+	servers := map[string]config.MCPServer{
+		"postgres": {
+			Command: "npx",
+			Args:    []string{"-y", "@modelcontextprotocol/server-postgres"},
+			Env:     map[string]string{"PORT": "5432"},
+		},
+	}
+
+	updated, err := updateTomlMCPServers(initialTOML, servers)
+	if err != nil {
+		t.Fatalf("updateTomlMCPServers failed: %v", err)
+	}
+
+	// 1. Comments preserved
+	expectedComments := []string{
+		"# Codex Global Configuration",
+		"# Maintained by DevOps",
+		"# default model",
+		"# Custom developer tools section",
+		"# internal comment inside custom_section",
+		"# User unmanaged MCP server",
+		"# Trailing footer section",
+	}
+	for _, c := range expectedComments {
+		if !strings.Contains(updated, c) {
+			t.Errorf("expected comment %q preserved in output:\n%s", c, updated)
+		}
+	}
+
+	// 2. Unmanaged settings and sections preserved
+	expectedSections := []string{
+		`model = "gpt-4o"`,
+		"temperature = 0.2",
+		"[custom_section]",
+		`key = "important_value"`,
+		"flag = true",
+		"[mcp_servers.my_custom_tool]",
+		`command = "my-tool"`,
+		`args = ["--verbose"]`,
+		"[footer_section]",
+		"enabled = false",
+	}
+	for _, s := range expectedSections {
+		if !strings.Contains(updated, s) {
+			t.Errorf("expected section %q preserved in output:\n%s", s, updated)
+		}
+	}
+
+	// 3. Managed server updated
+	if strings.Contains(updated, `command = "old-pg"`) {
+		t.Errorf("expected old managed server command replaced")
+	}
+	if !strings.Contains(updated, "[mcp_servers.postgres]") {
+		t.Errorf("expected [mcp_servers.postgres] in output")
+	}
+	if !strings.Contains(updated, `command = "npx"`) {
+		t.Errorf("expected command = \"npx\" in output")
+	}
+	if !strings.Contains(updated, `[mcp_servers.postgres.env]`) || !strings.Contains(updated, `PORT = "5432"`) {
+		t.Errorf("expected postgres env in output:\n%s", updated)
+	}
+
+	// 4. Repeated update is byte-for-byte identical
+	repeated, err := updateTomlMCPServers(updated, servers)
+	if err != nil {
+		t.Fatalf("repeated update failed: %v", err)
+	}
+	if repeated != updated {
+		t.Fatalf("expected idempotent repeated update:\nFirst:\n%s\nSecond:\n%s", updated, repeated)
+	}
+}
+
+func TestUpdateTomlMCPServers_RejectsMalformedTOML(t *testing.T) {
+	malformed := `# Corrupted TOML
+model = "unclosed string without closing quote
+[mcp_servers]
+`
+	servers := map[string]config.MCPServer{
+		"postgres": {Command: "npx"},
+	}
+
+	_, err := updateTomlMCPServers(malformed, servers)
+	if err == nil {
+		t.Fatalf("expected error on malformed TOML, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot parse existing TOML config") {
+		t.Fatalf("expected 'cannot parse existing TOML config' in error, got: %v", err)
 	}
 }
