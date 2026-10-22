@@ -300,48 +300,6 @@ func TestSafety_MCP_DoNotDeleteUnmanagedUserServers(t *testing.T) {
 	}
 }
 
-// TestIntegration_List_Inventory verifies that `agentsync list` reports
-// the exact guidelines, skills, MCP servers, and target agents.
-func TestIntegration_List_Inventory(t *testing.T) {
-	env := newIntegrationEnv(t)
-
-	env.PopulateStandardAI([]string{"claude-code", "cursor", "codex"})
-
-	stdout, stderr, err := env.RunList()
-	if err != nil {
-		t.Fatalf("list command failed: %v\nStderr: %s", err, stderr)
-	}
-
-	// Guidelines (2)
-	if !strings.Contains(stdout, "Guidelines (2)") {
-		t.Errorf("expected Guidelines (2), got:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "01-core.md") || !strings.Contains(stdout, "02-style.md") {
-		t.Errorf("expected guideline file names in list output")
-	}
-
-	// Skills (1)
-	if !strings.Contains(stdout, "Skills (1)") {
-		t.Errorf("expected Skills (1), got:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "code-review") {
-		t.Errorf("expected code-review in skills list output")
-	}
-
-	// MCP Servers (2)
-	if !strings.Contains(stdout, "MCP Servers (2)") {
-		t.Errorf("expected MCP Servers (2), got:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "postgres") || !strings.Contains(stdout, "filesystem") {
-		t.Errorf("expected postgres and filesystem in MCP list output")
-	}
-
-	// Agents (sync.lock)
-	if !strings.Contains(stdout, "Claude Code") || !strings.Contains(stdout, "Cursor") || !strings.Contains(stdout, "Codex") {
-		t.Errorf("expected agent display names in list output, got:\n%s", stdout)
-	}
-}
-
 // TestIntegration_Skills_SymlinkAndDirectFiles verifies how symlinks and root files
 // in .ai/skills are handled during installation.
 func TestIntegration_Skills_SymlinkAndDirectFiles(t *testing.T) {

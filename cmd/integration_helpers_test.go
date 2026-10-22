@@ -155,18 +155,6 @@ func (e *integrationEnv) RunInstall(args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
-// RunList executes `agentsync list`.
-func (e *integrationEnv) RunList() (string, string, error) {
-	e.T.Helper()
-	cmd := newListCmd()
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	err := cmd.Execute()
-	return stdout.String(), stderr.String(), err
-}
-
 // RunInit executes `agentsync init` with mocked wizard hooks to allow deterministic testing.
 func (e *integrationEnv) RunInit(
 	overwriteConfirm bool,
