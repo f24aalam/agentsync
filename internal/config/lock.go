@@ -2,37 +2,28 @@ package config
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 )
 
-// ResourceLock records ownership metadata and a content hash for a managed resource.
-type ResourceLock struct {
-	Hash string `toml:"hash"`
-}
-
 // LockFile represents the minimal ownership metadata persisted in .ai/sync.lock.
 type LockFile struct {
-	Agents     []string                           `toml:"agents"`
-	Guidelines map[string]ResourceLock            `toml:"guidelines,omitempty"`
-	Skills     map[string]ResourceLock            `toml:"skills,omitempty"`
-	MCP        map[string]map[string]ResourceLock `toml:"mcp,omitempty"`
+	Agents []string            `toml:"agents"`
+	Skills map[string][]string `toml:"skills,omitempty"`
+	MCP    map[string][]string `toml:"mcp,omitempty"`
 }
 
 // NewLockFile creates an initialized LockFile with empty collections.
 func NewLockFile() *LockFile {
 	return &LockFile{
-		Agents:     []string{},
-		Guidelines: make(map[string]ResourceLock),
-		Skills:     make(map[string]ResourceLock),
-		MCP:        make(map[string]map[string]ResourceLock),
+		Agents: []string{},
+		Skills: make(map[string][]string),
+		MCP:    make(map[string][]string),
 	}
 }
 
@@ -41,15 +32,14 @@ func (l *LockFile) IsSkillPackageManaged(destSkillsDir, skillName string) bool {
 	if l == nil || l.Skills == nil {
 		return false
 	}
-	normPkg := filepath.Clean(filepath.Join(destSkillsDir, skillName))
-	if _, ok := l.Skills[normPkg]; ok {
-		return true
-	}
-	prefix := normPkg + string(filepath.Separator)
-	for k := range l.Skills {
-		cleanK := filepath.Clean(k)
-		if strings.HasPrefix(cleanK, prefix) || cleanK == normPkg {
-			return true
+	cleanDir := filepath.Clean(destSkillsDir)
+	for dir, packages := range l.Skills {
+		if filepath.Clean(dir) == cleanDir {
+			for _, pkg := range packages {
+				if pkg == skillName {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -61,10 +51,30 @@ func (l *LockFile) RecordSkillPackage(destSkillsDir, skillName string) {
 		return
 	}
 	if l.Skills == nil {
-		l.Skills = make(map[string]ResourceLock)
+		l.Skills = make(map[string][]string)
 	}
-	normPkg := filepath.Clean(filepath.Join(destSkillsDir, skillName))
-	l.Skills[normPkg] = ResourceLock{}
+	cleanDir := filepath.Clean(destSkillsDir)
+	for _, existing := range l.Skills[cleanDir] {
+		if existing == skillName {
+			return
+		}
+	}
+	l.Skills[cleanDir] = append(l.Skills[cleanDir], skillName)
+	slices.Sort(l.Skills[cleanDir])
+}
+
+// HasTrackedSkills reports whether destSkillsDir has any managed skill packages.
+func (l *LockFile) HasTrackedSkills(destSkillsDir string) bool {
+	if l == nil || l.Skills == nil {
+		return false
+	}
+	cleanDir := filepath.Clean(destSkillsDir)
+	for dir, packages := range l.Skills {
+		if filepath.Clean(dir) == cleanDir && len(packages) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // IsMCPManaged reports whether an MCP server name in destFile is recorded as managed.
@@ -75,8 +85,10 @@ func (l *LockFile) IsMCPManaged(destFile, serverName string) bool {
 	cleanDest := filepath.Clean(destFile)
 	for destKey, servers := range l.MCP {
 		if filepath.Clean(destKey) == cleanDest {
-			if _, ok := servers[serverName]; ok {
-				return true
+			for _, srv := range servers {
+				if srv == serverName {
+					return true
+				}
 			}
 		}
 	}
@@ -89,29 +101,19 @@ func (l *LockFile) RecordMCP(destFile, serverName string) {
 		return
 	}
 	if l.MCP == nil {
-		l.MCP = make(map[string]map[string]ResourceLock)
+		l.MCP = make(map[string][]string)
 	}
 	cleanDest := filepath.Clean(destFile)
-	if l.MCP[cleanDest] == nil {
-		l.MCP[cleanDest] = make(map[string]ResourceLock)
+	for _, existing := range l.MCP[cleanDest] {
+		if existing == serverName {
+			return
+		}
 	}
-	l.MCP[cleanDest][serverName] = ResourceLock{}
-}
-
-// HashBytes computes the SHA-256 hex string of data.
-func HashBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// HashString computes the SHA-256 hex string of s.
-func HashString(s string) string {
-	return HashBytes([]byte(s))
+	l.MCP[cleanDest] = append(l.MCP[cleanDest], serverName)
+	slices.Sort(l.MCP[cleanDest])
 }
 
 // ReadFullLock reads and parses the complete .ai/sync.lock file.
-// If the lock file was created by an older version containing only `agents = [...]`,
-// it safely initializes empty resource maps without assuming ownership of existing resources.
 func ReadFullLock(path string) (*LockFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -126,14 +128,11 @@ func ReadFullLock(path string) (*LockFile, error) {
 	if lock.Agents == nil {
 		lock.Agents = []string{}
 	}
-	if lock.Guidelines == nil {
-		lock.Guidelines = make(map[string]ResourceLock)
-	}
 	if lock.Skills == nil {
-		lock.Skills = make(map[string]ResourceLock)
+		lock.Skills = make(map[string][]string)
 	}
 	if lock.MCP == nil {
-		lock.MCP = make(map[string]map[string]ResourceLock)
+		lock.MCP = make(map[string][]string)
 	}
 
 	return &lock, nil
@@ -167,7 +166,7 @@ func WriteFullLock(path string, lock *LockFile) error {
 	return os.WriteFile(path, newData, 0o644)
 }
 
-// ReadLock reads the selected agent IDs from .ai/sync.lock, preserving backward compatibility.
+// ReadLock reads the selected agent IDs from .ai/sync.lock.
 func ReadLock(path string) ([]string, error) {
 	lock, err := ReadFullLock(path)
 	if err != nil {
@@ -177,7 +176,7 @@ func ReadLock(path string) ([]string, error) {
 }
 
 // WriteLock writes or updates the selected agent IDs in .ai/sync.lock,
-// preserving any existing guideline, skill, or MCP ownership metadata.
+// preserving any existing skill or MCP ownership metadata.
 func WriteLock(path string, agents []string) error {
 	lock, err := ReadFullLock(path)
 	if err != nil {

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"path/filepath"
-	"strings"
 )
 
 // SkillDirKey normalizes a skills output path for maps and lookups.
@@ -88,17 +87,7 @@ func computeSkillStepsByDir(agents []Agent, plan InstallPlan, root string, would
 			continue
 		}
 		if !wouldSkills {
-			hasTracked := false
-			if plan.Lock != nil && plan.Lock.Skills != nil {
-				normDestPrefix := filepath.Clean(dir) + string(filepath.Separator)
-				for p := range plan.Lock.Skills {
-					if strings.HasPrefix(filepath.Clean(p), normDestPrefix) {
-						hasTracked = true
-						break
-					}
-				}
-			}
-			if !hasTracked {
+			if plan.Lock == nil || !plan.Lock.HasTrackedSkills(dir) {
 				out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
 				continue
 			}

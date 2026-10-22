@@ -139,15 +139,6 @@ func installGuidelinesWithLock(target Agent, root string, skip bool, lock *confi
 		}
 	}
 
-	if lock != nil {
-		if lock.Guidelines == nil {
-			lock.Guidelines = make(map[string]config.ResourceLock)
-		}
-		if inner, ok := ExtractManagedSection(finalContent); ok {
-			lock.Guidelines[dest] = config.ResourceLock{Hash: config.HashString(inner)}
-		}
-	}
-
 	return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusOK}
 }
 
@@ -461,7 +452,6 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 			return err
 		}
 		targetPath := filepath.Join(dstDir, rel)
-		normTargetRel, _ := filepath.Rel(root, targetPath)
 
 		if info.IsDir() {
 			return os.MkdirAll(targetPath, 0o755)
@@ -472,31 +462,19 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 			srcData, err := os.ReadFile(path)
 			if err == nil {
 				if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
-					if lock != nil {
-						if lock.Skills == nil {
-							lock.Skills = make(map[string]config.ResourceLock)
-						}
-						lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
-					}
 					return nil
 				}
 			}
 		}
 
-		if err := CopyFileWithinPackage(path, targetPath, srcDir); err != nil {
-			return err
-		}
-
-		if lock != nil {
-			if lock.Skills == nil {
-				lock.Skills = make(map[string]config.ResourceLock)
-			}
-			lock.Skills[normTargetRel] = config.ResourceLock{}
-		}
-		return nil
+		return CopyFileWithinPackage(path, targetPath, srcDir)
 	})
 	if err != nil {
 		return err
+	}
+
+	if lock != nil {
+		lock.RecordSkillPackage(dirKey, skillName)
 	}
 
 	// Remove stale files inside this package so it matches canonical source exactly (approved package replacement)
@@ -657,14 +635,7 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 		for name, v := range managed {
 			existingServers[name] = v
 			if lock != nil {
-				if lock.MCP == nil {
-					lock.MCP = make(map[string]map[string]config.ResourceLock)
-				}
-				if lock.MCP[normKey] == nil {
-					lock.MCP[normKey] = make(map[string]config.ResourceLock)
-				}
-				vBytes, _ := json.Marshal(v)
-				lock.MCP[normKey][name] = config.ResourceLock{Hash: config.HashBytes(vBytes)}
+				lock.RecordMCP(normKey, name)
 			}
 		}
 
@@ -695,15 +666,8 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 	data = append(data, '\n')
 
 	if lock != nil {
-		if lock.MCP == nil {
-			lock.MCP = make(map[string]map[string]config.ResourceLock)
-		}
-		if lock.MCP[normKey] == nil {
-			lock.MCP[normKey] = make(map[string]config.ResourceLock)
-		}
-		for name, v := range managed {
-			vBytes, _ := json.Marshal(v)
-			lock.MCP[normKey][name] = config.ResourceLock{Hash: config.HashBytes(vBytes)}
+		for name := range managed {
+			lock.RecordMCP(normKey, name)
 		}
 	}
 
@@ -821,14 +785,8 @@ func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 			rendered += "\n"
 		}
 		if lock != nil {
-			if lock.MCP == nil {
-				lock.MCP = make(map[string]map[string]config.ResourceLock)
-			}
-			if lock.MCP[normKey] == nil {
-				lock.MCP[normKey] = make(map[string]config.ResourceLock)
-			}
-			for name, srv := range cfg.Servers {
-				lock.MCP[normKey][name] = config.ResourceLock{Hash: config.HashString(strings.TrimSpace(renderSingleTomlMCPServer(name, srv)))}
+			for name := range cfg.Servers {
+				lock.RecordMCP(normKey, name)
 			}
 		}
 		return writeFileWithParents(dest, []byte(rendered))
@@ -840,14 +798,8 @@ func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 	}
 
 	if lock != nil {
-		if lock.MCP == nil {
-			lock.MCP = make(map[string]map[string]config.ResourceLock)
-		}
-		if lock.MCP[normKey] == nil {
-			lock.MCP[normKey] = make(map[string]config.ResourceLock)
-		}
-		for name, srv := range cfg.Servers {
-			lock.MCP[normKey][name] = config.ResourceLock{Hash: config.HashString(strings.TrimSpace(renderSingleTomlMCPServer(name, srv)))}
+		for name := range cfg.Servers {
+			lock.RecordMCP(normKey, name)
 		}
 	}
 

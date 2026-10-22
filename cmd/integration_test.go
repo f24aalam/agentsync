@@ -331,9 +331,9 @@ func TestIntegration_Skills_SymlinkAndDirectFiles(t *testing.T) {
 	env.AssertFileNotExists(".agents/skills/ROOT_README.txt")
 }
 
-// TestIntegration_Phase2_CompleteLifecycle verifies the complete
-// first-install -> repeat-install -> update -> user-modify -> delete lifecycle.
-func TestIntegration_Phase2_CompleteLifecycle(t *testing.T) {
+// TestIntegration_CompleteLifecycle verifies the complete
+// first-install -> repeat-install -> update -> delete lifecycle.
+func TestIntegration_CompleteLifecycle(t *testing.T) {
 	env := newIntegrationEnv(t)
 
 	// Agents: Claude Code and Codex
@@ -353,14 +353,11 @@ func TestIntegration_Phase2_CompleteLifecycle(t *testing.T) {
 	env.AssertFileExists(".ai/sync.lock")
 
 	lockContent := env.ReadFile(".ai/sync.lock")
-	if !strings.Contains(lockContent, "CLAUDE.md") || !strings.Contains(lockContent, "AGENTS.md") {
-		t.Fatalf("expected guidelines tracked in sync.lock:\n%s", lockContent)
-	}
-	if !strings.Contains(lockContent, ".claude/skills/code-review/SKILL.md") {
-		t.Fatalf("expected skills tracked in sync.lock:\n%s", lockContent)
+	if !strings.Contains(lockContent, "code-review") {
+		t.Fatalf("expected skills package tracked in sync.lock:\n%s", lockContent)
 	}
 	if !strings.Contains(lockContent, "postgres") {
-		t.Fatalf("expected MCP tracked in sync.lock:\n%s", lockContent)
+		t.Fatalf("expected MCP server tracked in sync.lock:\n%s", lockContent)
 	}
 
 	// --- Step 2: Repeat install (must be 100% idempotent with zero conflict prompts) ---
@@ -405,32 +402,7 @@ func TestIntegration_Phase2_CompleteLifecycle(t *testing.T) {
 	env.AssertFileContains("CLAUDE.md", "Updated new requirement")
 	env.AssertFileContains("AGENTS.md", "Updated new requirement")
 
-	// --- Step 4: User modification detection (genuine conflict) ---
-	// User edits inside managed section of CLAUDE.md
-	userModifiedCLAUDE := `# Header
-` + agentpkg.ManagedSectionStart + `
-# Project Core Guidelines
-User edited directly inside the managed block!
-` + agentpkg.ManagedSectionEnd + `
-`
-	env.WriteFile("CLAUDE.md", userModifiedCLAUDE)
-
-	conflictsUserMod, err := agentpkg.DetectInstallConflicts([]agentpkg.Agent{mustGetAgent("claude-code")}, env.RootDir)
-	if err != nil {
-		t.Fatalf("detect conflicts on user modification failed: %v", err)
-	}
-	foundConflict := false
-	for _, c := range conflictsUserMod {
-		if c.Kind == agentpkg.KindGuidelines && c.AgentID == "claude-code" {
-			foundConflict = true
-			break
-		}
-	}
-	if !foundConflict {
-		t.Fatalf("expected genuine conflict detected for user-modified CLAUDE.md, got none!")
-	}
-
-	// --- Step 5: No Orphan Pruning on Deletion from .ai/ (v1 contract) ---
+	// --- Step 4: No Orphan Pruning on Deletion from .ai/ (v1 contract) ---
 	// Add an unmanaged file in destination skill dir
 	unmanagedCustomFile := ".claude/skills/code-review/custom-notes.txt"
 	env.WriteFile(unmanagedCustomFile, "Keep this file safe!")

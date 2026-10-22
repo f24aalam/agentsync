@@ -318,29 +318,15 @@ func guidelinesConflict(root string, a Agent) bool {
 	}
 
 	// 2. Check if file has managed markers
-	currentManaged, hasMarkers := ExtractManagedSection(existingContent)
+	_, hasMarkers := ExtractManagedSection(existingContent)
 	if !hasMarkers {
 		// File has pre-existing user content without managed markers.
 		return true
 	}
 
-	// 3. File has managed markers: check sync.lock to see if user modified it
-	lock, err := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
-	if err != nil {
-		return true
-	}
-
-	storedLock, ok := lock.Guidelines[dest]
-	if !ok || storedLock.Hash == "" {
-		return true
-	}
-
-	// If current managed section matches stored hash, user did not touch it (safe update)
-	if config.HashString(currentManaged) == storedLock.Hash {
-		return false
-	}
-
-	return true
+	// File has managed markers: the section inside is managed by AgentSync,
+	// and text outside markers is preserved byte-for-byte. Safe update without prompt fatigue.
+	return false
 }
 
 func agentIDsUsingGuidelinesDest(agents []Agent, dest string) []string {
