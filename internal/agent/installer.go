@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,6 +20,9 @@ const (
 	skillsSourceDir     = ".ai/skills"
 	mcpSourcePath       = ".ai/mcp.toml"
 	cursorGuidelinesOut = ".cursor/rules/agentsync.mdc"
+
+	ManagedSectionStart = "<!-- BEGIN AGENTSYNC MANAGED -->"
+	ManagedSectionEnd   = "<!-- END AGENTSYNC MANAGED -->"
 )
 
 type StepStatus string
@@ -89,15 +94,68 @@ func installGuidelines(target Agent, root string, skip bool) StepResult {
 		if err != nil {
 			return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 		}
-		parts = append(parts, string(data))
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
 	}
 
-	content := strings.Join(parts, "\n")
-	if err := writeFileWithParents(destPath, []byte(content)); err != nil {
+	if len(parts) == 0 {
+		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusSkipped}
+	}
+
+	mergedContent := strings.Join(parts, "\n\n")
+
+	var existingContent string
+	existingData, err := os.ReadFile(destPath)
+	if err == nil {
+		existingContent = string(existingData)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
+	}
+
+	finalContent := injectManagedGuidelines(existingContent, mergedContent)
+
+	if err := writeFileWithParents(destPath, []byte(finalContent)); err != nil {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
 
 	return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusOK}
+}
+
+func injectManagedGuidelines(existingContent, managedContent string) string {
+	managedBlock := ManagedSectionStart + "\n" + managedContent + "\n" + ManagedSectionEnd
+
+	startIdx := strings.Index(existingContent, ManagedSectionStart)
+	endIdx := strings.Index(existingContent, ManagedSectionEnd)
+
+	if startIdx != -1 && endIdx != -1 && endIdx >= startIdx {
+		before := existingContent[:startIdx]
+		after := existingContent[endIdx+len(ManagedSectionEnd):]
+
+		beforeTrimmed := strings.TrimSpace(before)
+		afterTrimmed := strings.TrimSpace(after)
+
+		var b strings.Builder
+		if beforeTrimmed != "" {
+			b.WriteString(beforeTrimmed)
+			b.WriteString("\n\n")
+		}
+		b.WriteString(managedBlock)
+		if afterTrimmed != "" {
+			b.WriteString("\n\n")
+			b.WriteString(afterTrimmed)
+		}
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	existingTrimmed := strings.TrimSpace(existingContent)
+	if existingTrimmed == "" {
+		return managedBlock + "\n"
+	}
+
+	return existingTrimmed + "\n\n" + managedBlock + "\n"
 }
 
 func installSkills(target Agent, root string) StepResult {
@@ -259,8 +317,7 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig) error 
 	if err == nil {
 		var root map[string]any
 		if err := json.Unmarshal(existing, &root); err != nil {
-			// If existing JSON can't be parsed, fall back to overwrite.
-			root = renderRoot()
+			return fmt.Errorf("cannot parse existing JSON config at %s: %w", dest, err)
 		}
 
 		existingServers, ok := root[rootKey].(map[string]any)
@@ -389,29 +446,42 @@ func mcpJSONRoot(target Agent) (rootKey string, renderRoot func() map[string]any
 }
 
 func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig) error {
-	// Merge only `[mcp_servers]` entries; other TOML keys are not preserved.
-	var payload struct {
-		MCPServers map[string]config.MCPServer `toml:"mcp_servers"`
-	}
+	var root map[string]any
 
 	existing, err := os.ReadFile(dest)
 	if err == nil {
-		_ = toml.Unmarshal(existing, &payload)
+		if _, err := toml.Decode(string(existing), &root); err != nil {
+			return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
-	if payload.MCPServers == nil {
-		payload.MCPServers = map[string]config.MCPServer{}
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	existingServers, ok := root["mcp_servers"].(map[string]any)
+	if !ok || existingServers == nil {
+		existingServers = make(map[string]any)
 	}
 
 	for name, server := range cfg.Servers {
-		payload.MCPServers[name] = server
+		cleanServer := server
+		if len(cleanServer.Env) == 0 {
+			cleanServer.Env = nil
+		}
+		existingServers[name] = cleanServer
 	}
 
-	data, err := config.RenderMCP(config.MCPConfig{Servers: payload.MCPServers}, "toml")
-	if err != nil {
+	root["mcp_servers"] = existingServers
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return err
 	}
-	return writeFileWithParents(dest, data)
+
+	return writeFileWithParents(dest, buf.Bytes())
 }
 
 func resolveGuidelinesTarget(target Agent) string {

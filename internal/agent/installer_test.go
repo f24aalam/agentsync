@@ -28,8 +28,9 @@ func TestInstallGuidelinesMergesAlphabetically(t *testing.T) {
 		t.Fatalf("read merged guidelines: %v", err)
 	}
 
-	if string(data) != "A\nB" {
-		t.Fatalf("expected alphabetical merge, got %q", string(data))
+	want := ManagedSectionStart + "\nA\n\nB\n" + ManagedSectionEnd + "\n"
+	if string(data) != want {
+		t.Fatalf("expected alphabetical merge in managed block, got %q", string(data))
 	}
 }
 
