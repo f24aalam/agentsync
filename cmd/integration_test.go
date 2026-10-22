@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	agentpkg "github.com/f24aalam/agentsync/internal/agent"
 	stepflow "github.com/f24aalam/stepflow/pkg"
 )
 
@@ -374,4 +375,124 @@ func TestIntegration_Skills_SymlinkAndDirectFiles(t *testing.T) {
 
 	// 2. Direct root files in .ai/skills are currently ignored by design
 	env.AssertFileNotExists(".agents/skills/ROOT_README.txt")
+}
+
+// TestIntegration_Phase2_CompleteLifecycle verifies the complete
+// first-install -> repeat-install -> update -> user-modify -> delete lifecycle.
+func TestIntegration_Phase2_CompleteLifecycle(t *testing.T) {
+	env := newIntegrationEnv(t)
+
+	// Agents: Claude Code and Codex
+	env.PopulateStandardAI([]string{"claude-code", "codex"})
+
+	// --- Step 1: First install ---
+	stdout1, stderr1, err := env.RunInstall("-y")
+	if err != nil {
+		t.Fatalf("first install failed: %v\nStderr: %s\nStdout: %s", err, stderr1, stdout1)
+	}
+
+	env.AssertFileExists("CLAUDE.md")
+	env.AssertFileExists("AGENTS.md")
+	env.AssertFileExists(".claude/skills/code-review/SKILL.md")
+	env.AssertFileExists(".mcp.json")
+	env.AssertFileExists(".codex/config.toml")
+	env.AssertFileExists(".ai/sync.lock")
+
+	lockContent := env.ReadFile(".ai/sync.lock")
+	if !strings.Contains(lockContent, "CLAUDE.md") || !strings.Contains(lockContent, "AGENTS.md") {
+		t.Fatalf("expected guidelines tracked in sync.lock:\n%s", lockContent)
+	}
+	if !strings.Contains(lockContent, ".claude/skills/code-review/SKILL.md") {
+		t.Fatalf("expected skills tracked in sync.lock:\n%s", lockContent)
+	}
+	if !strings.Contains(lockContent, "postgres") {
+		t.Fatalf("expected MCP tracked in sync.lock:\n%s", lockContent)
+	}
+
+	// --- Step 2: Repeat install (must be 100% idempotent with zero conflict prompts) ---
+	targets := []agentpkg.Agent{
+		mustGetAgent("claude-code"),
+		mustGetAgent("codex"),
+	}
+	conflicts, err := agentpkg.DetectInstallConflicts(targets, env.RootDir)
+	if err != nil {
+		t.Fatalf("detect conflicts on repeat install failed: %v", err)
+	}
+	if len(conflicts) > 0 {
+		var conflictKeys []string
+		for _, c := range conflicts {
+			conflictKeys = append(conflictKeys, c.StepKey)
+		}
+		t.Fatalf("expected 0 conflicts on repeat install, got: %v", conflictKeys)
+	}
+
+	stdout2, stderr2, err2 := env.RunInstall("-y")
+	if err2 != nil {
+		t.Fatalf("repeat install failed: %v\nStderr: %s\nStdout: %s", err2, stderr2, stdout2)
+	}
+	if !strings.Contains(stdout2, "Done! 2 agents configured.") {
+		t.Fatalf("expected 2 agents configured on repeat install, got:\n%s", stdout2)
+	}
+
+	// --- Step 3: Update .ai/ source (safe update without prompt fatigue) ---
+	env.WriteFile(".ai/guidelines/01-core.md", "# Project Core Guidelines\nUpdated new requirement.\n")
+	conflictsAfterUpdate, err := agentpkg.DetectInstallConflicts(targets, env.RootDir)
+	if err != nil {
+		t.Fatalf("detect conflicts after update failed: %v", err)
+	}
+	if len(conflictsAfterUpdate) > 0 {
+		t.Fatalf("expected 0 conflicts for safe update from .ai/, got: %+v", conflictsAfterUpdate)
+	}
+
+	_, _, err = env.RunInstall("-y")
+	if err != nil {
+		t.Fatalf("update install failed: %v", err)
+	}
+	env.AssertFileContains("CLAUDE.md", "Updated new requirement")
+	env.AssertFileContains("AGENTS.md", "Updated new requirement")
+
+	// --- Step 4: User modification detection (genuine conflict) ---
+	// User edits inside managed section of CLAUDE.md
+	userModifiedCLAUDE := `# Header
+` + agentpkg.ManagedSectionStart + `
+# Project Core Guidelines
+User edited directly inside the managed block!
+` + agentpkg.ManagedSectionEnd + `
+`
+	env.WriteFile("CLAUDE.md", userModifiedCLAUDE)
+
+	conflictsUserMod, err := agentpkg.DetectInstallConflicts([]agentpkg.Agent{mustGetAgent("claude-code")}, env.RootDir)
+	if err != nil {
+		t.Fatalf("detect conflicts on user modification failed: %v", err)
+	}
+	foundConflict := false
+	for _, c := range conflictsUserMod {
+		if c.Kind == agentpkg.KindGuidelines && c.AgentID == "claude-code" {
+			foundConflict = true
+			break
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("expected genuine conflict detected for user-modified CLAUDE.md, got none!")
+	}
+
+	// --- Step 5: Safe Pruning on Deletion from .ai/ ---
+	// Add an unmanaged file in destination skill dir
+	unmanagedCustomFile := ".claude/skills/code-review/custom-notes.txt"
+	env.WriteFile(unmanagedCustomFile, "Keep this file safe!")
+
+	// Delete code-review skill from .ai/skills
+	_ = os.RemoveAll(filepath.Join(env.RootDir, ".ai/skills/code-review"))
+
+	// Install with -y
+	_, _, err = env.RunInstall("-y")
+	if err != nil {
+		t.Fatalf("install after deletion failed: %v", err)
+	}
+
+	// Unmodified managed files should be pruned
+	env.AssertFileNotExists(".claude/skills/code-review/SKILL.md")
+	// Unmanaged user-authored file must be preserved
+	env.AssertFileExists(unmanagedCustomFile)
+	env.AssertFileContains(unmanagedCustomFile, "Keep this file safe!")
 }
