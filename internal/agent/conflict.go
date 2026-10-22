@@ -11,10 +11,11 @@ import (
 
 // InstallConflict describes whether a category needs a user prompt (would write + target exists).
 type InstallConflict struct {
-	AgentID   string   // agent ID (empty for skills-dir–only rows)
-	SkillsDir string   // set when Kind is KindSkillsDir
+	AgentID   string       // agent ID (empty for skills-dir–only rows)
+	SkillsDir string       // set when Kind is KindSkillsDir
 	Kind      ConflictKind
-	// AgentIDs lists agents sharing SkillsDir when Kind is KindSkillsDir.
+	DestPath  string       // set for guidelines destination
+	// AgentIDs lists agents sharing SkillsDir when Kind is KindSkillsDir, or sharing DestPath for guidelines.
 	AgentIDs []string
 	Question string
 	StepKey  string
@@ -48,13 +49,29 @@ func DetectInstallConflicts(agents []Agent, root string) ([]InstallConflict, err
 		return nil, err
 	}
 
+	seenGuidelinesDest := make(map[string]bool)
 	for _, a := range agents {
+		dest := resolveGuidelinesTarget(a)
+		if seenGuidelinesDest[dest] {
+			continue
+		}
 		if wouldG && guidelinesConflict(root, a) {
+			seenGuidelinesDest[dest] = true
+			ids := agentIDsUsingGuidelinesDest(agents, dest)
+			slices.Sort(ids)
+			question := a.Name + ": guidelines file already exists. Overwrite with merged .ai/guidelines?"
+			if len(ids) > 1 {
+				names := agentNamesUsingGuidelinesDest(agents, dest)
+				question = a.Name + ": guidelines file already exists. Overwrite with merged .ai/guidelines?"
+				_ = names
+			}
 			out = append(out, InstallConflict{
 				AgentID:  a.ID,
 				Kind:     KindGuidelines,
+				DestPath: dest,
+				AgentIDs: ids,
 				StepKey:  "install/" + a.ID + "/guidelines",
-				Question: a.Name + ": guidelines file already exists. Overwrite with merged .ai/guidelines?",
+				Question: question,
 			})
 		}
 	}
@@ -159,8 +176,91 @@ func wouldInstallMCP(root string) (bool, error) {
 }
 
 func guidelinesConflict(root string, a Agent) bool {
-	dest := filepath.Join(root, resolveGuidelinesTarget(a))
-	return fileExistsNonEmpty(dest)
+	dest := resolveGuidelinesTarget(a)
+	destPath := filepath.Join(root, dest)
+	if !fileExistsNonEmpty(destPath) {
+		return false
+	}
+
+	existingData, err := os.ReadFile(destPath)
+	if err != nil {
+		return false
+	}
+	existingContent := string(existingData)
+
+	files, err := markdownFiles(filepath.Join(root, guidelinesSourceDir))
+	if err != nil || len(files) == 0 {
+		return false
+	}
+	var parts []string
+	for _, p := range files {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return false
+	}
+	mergedContent := strings.Join(parts, "\n\n")
+
+	finalContent, err := injectManagedGuidelines(existingContent, mergedContent)
+	if err != nil {
+		return false
+	}
+
+	// 1. If target file already matches what would be written, NO CONFLICT!
+	if finalContent == existingContent {
+		return false
+	}
+
+	// 2. Check if file has managed markers
+	currentManaged, hasMarkers := ExtractManagedSection(existingContent)
+	if !hasMarkers {
+		// File has pre-existing user content without managed markers.
+		return true
+	}
+
+	// 3. File has managed markers: check sync.lock to see if user modified it
+	lock, err := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
+	if err != nil {
+		return true
+	}
+
+	storedLock, ok := lock.Guidelines[dest]
+	if !ok || storedLock.Hash == "" {
+		return true
+	}
+
+	// If current managed section matches stored hash, user did not touch it (safe update)
+	if config.HashString(currentManaged) == storedLock.Hash {
+		return false
+	}
+
+	return true
+}
+
+func agentIDsUsingGuidelinesDest(agents []Agent, dest string) []string {
+	var ids []string
+	for _, a := range agents {
+		if resolveGuidelinesTarget(a) == dest {
+			ids = append(ids, a.ID)
+		}
+	}
+	return ids
+}
+
+func agentNamesUsingGuidelinesDest(agents []Agent, dest string) []string {
+	var names []string
+	for _, a := range agents {
+		if resolveGuidelinesTarget(a) == dest {
+			names = append(names, a.Name)
+		}
+	}
+	return names
 }
 
 func skillsDirConflict(root string, skillsDir string) bool {

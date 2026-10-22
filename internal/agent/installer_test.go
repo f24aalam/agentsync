@@ -374,3 +374,133 @@ model = "unclosed string without closing quote
 		t.Fatalf("expected 'cannot parse existing TOML config' in error, got: %v", err)
 	}
 }
+
+func TestInjectManagedGuidelines_LineEndingsAndDrift(t *testing.T) {
+	// 1. CRLF line endings preservation
+	userCRLF := "# Header\r\n\r\nCustom notes.\r\n"
+	managed := "Managed paragraph 1\nManaged paragraph 2"
+	withCRLF, err := injectManagedGuidelines(userCRLF, managed)
+	if err != nil {
+		t.Fatalf("inject with CRLF failed: %v", err)
+	}
+	if !strings.Contains(withCRLF, "\r\n") {
+		t.Errorf("expected CRLF line endings preserved")
+	}
+	if !strings.HasPrefix(withCRLF, userCRLF) {
+		t.Errorf("expected exact CRLF prefix preserved:\nWant: %q\nGot: %q", userCRLF, withCRLF[:len(userCRLF)])
+	}
+
+	// Repeated inject with CRLF must be byte-for-byte identical
+	repeatedCRLF, err := injectManagedGuidelines(withCRLF, managed)
+	if err != nil {
+		t.Fatalf("repeated inject failed: %v", err)
+	}
+	if repeatedCRLF != withCRLF {
+		t.Errorf("drift detected on repeated CRLF inject:\nFirst:\n%q\nSecond:\n%q", withCRLF, repeatedCRLF)
+	}
+
+	// 2. Missing final newline in existing file
+	userNoFinalNewline := "# No final newline"
+	withNoFinal, err := injectManagedGuidelines(userNoFinalNewline, "Managed")
+	if err != nil {
+		t.Fatalf("inject without final newline failed: %v", err)
+	}
+	if !strings.HasPrefix(withNoFinal, userNoFinalNewline) {
+		t.Errorf("expected prefix preserved")
+	}
+
+	// 3. User content before and after managed section with arbitrary spacing
+	userBefore := "# Top Note\n\n"
+	userAfter := "\n\n# Bottom Note\n"
+	existing := userBefore + ManagedSectionStart + "\nOld\n" + ManagedSectionEnd + userAfter
+	updated, err := injectManagedGuidelines(existing, "New Content")
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+	if !strings.HasPrefix(updated, userBefore) {
+		t.Errorf("expected exact userBefore preserved")
+	}
+	if !strings.HasSuffix(updated, userAfter) {
+		t.Errorf("expected exact userAfter preserved")
+	}
+
+	// Idempotency check across 3 iterations
+	it2, _ := injectManagedGuidelines(updated, "New Content")
+	it3, _ := injectManagedGuidelines(it2, "New Content")
+	if it2 != updated || it3 != updated {
+		t.Errorf("formatting drift detected across repeated iterations!")
+	}
+}
+
+func TestInstallGuidelines_SafelyPrunesWhenEmptied(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// Setup initial guideline
+	mustWriteFile(t, ".ai/guidelines/a.md", "content A")
+	target, _ := ByID("claude-code")
+	lock := config.NewLockFile()
+	plan := NewInstallPlan()
+	plan.Lock = lock
+
+	res := installGuidelinesWithLock(target, ".", false, lock)
+	if res.Status != StepStatusOK {
+		t.Fatalf("expected ok, got %+v", res)
+	}
+	if lock.Guidelines["CLAUDE.md"].Hash == "" {
+		t.Fatalf("expected CLAUDE.md recorded in lock")
+	}
+
+	// Remove guidelines from .ai/guidelines
+	_ = os.Remove(".ai/guidelines/a.md")
+
+	// Run installGuidelines again with lock
+	res2 := installGuidelinesWithLock(target, ".", false, lock)
+	if res2.Status != StepStatusSkipped {
+		t.Fatalf("expected skipped status on prune, got %+v", res2)
+	}
+
+	// Since CLAUDE.md had only managed section, it should be removed or emptied
+	if _, err := os.Stat("CLAUDE.md"); !os.IsNotExist(err) {
+		data, _ := os.ReadFile("CLAUDE.md")
+		if strings.TrimSpace(string(data)) != "" {
+			t.Fatalf("expected CLAUDE.md to be pruned, found: %q", string(data))
+		}
+	}
+	if _, ok := lock.Guidelines["CLAUDE.md"]; ok {
+		t.Fatalf("expected CLAUDE.md removed from lock")
+	}
+}
+
+func TestInstallGuidelines_RefusesToPruneUserModified(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// Setup initial guideline
+	mustWriteFile(t, ".ai/guidelines/a.md", "content A")
+	target, _ := ByID("claude-code")
+	lock := config.NewLockFile()
+
+	res := installGuidelinesWithLock(target, ".", false, lock)
+	if res.Status != StepStatusOK {
+		t.Fatalf("expected ok, got %+v", res)
+	}
+
+	// User modifies the managed block directly in CLAUDE.md
+	mustWriteFile(t, "CLAUDE.md", ManagedSectionStart+"\nUser modified content inside markers\n"+ManagedSectionEnd+"\n")
+
+	// Remove .ai/guidelines
+	_ = os.Remove(".ai/guidelines/a.md")
+
+	res2 := installGuidelinesWithLock(target, ".", false, lock)
+	if res2.Status != StepStatusError {
+		t.Fatalf("expected error when trying to prune user-modified managed section, got %+v", res2)
+	}
+	if !strings.Contains(res2.Err.Error(), "user") {
+		t.Fatalf("expected error mentioning user modification, got: %v", res2.Err)
+	}
+}

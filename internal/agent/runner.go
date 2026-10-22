@@ -31,6 +31,8 @@ func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
 	results := make([]InstallResult, 0, len(agents))
 	configuredCount := 0
 
+	writtenGuidelines := make(map[string]StepResult)
+
 	for _, target := range agents {
 		var skillsStep StepResult
 		if !target.SkillsSupported {
@@ -44,7 +46,25 @@ func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
 			skillsStep.Target = target.SkillsDir
 		}
 
-		result := InstallAgent(target, root, skillsStep, plan)
+		destG := resolveGuidelinesTarget(target)
+		var gStep StepResult
+		if prev, ok := writtenGuidelines[destG]; ok {
+			gStep = prev
+		} else {
+			skipG := plan.SkipGuidelines[target.ID] || plan.SkipGuidelinesDest[destG]
+			gStep = installGuidelinesWithLock(target, root, skipG, plan.Lock)
+			writtenGuidelines[destG] = gStep
+		}
+
+		skipM := plan.SkipMCP[target.ID]
+		result := InstallResult{
+			Agent: target,
+			Steps: []StepResult{
+				gStep,
+				skillsStep,
+				installMCP(target, root, skipM),
+			},
+		}
 		results = append(results, result)
 		if result.Succeeded() {
 			configuredCount++

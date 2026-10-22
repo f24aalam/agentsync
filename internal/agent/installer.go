@@ -59,12 +59,13 @@ func InstallAgent(target Agent, root string, skillsStep StepResult, plan Install
 	if root == "" {
 		root = "."
 	}
-	skipG := plan.SkipGuidelines[target.ID]
+	dest := resolveGuidelinesTarget(target)
+	skipG := plan.SkipGuidelines[target.ID] || plan.SkipGuidelinesDest[dest]
 	skipM := plan.SkipMCP[target.ID]
 	return InstallResult{
 		Agent: target,
 		Steps: []StepResult{
-			installGuidelines(target, root, skipG),
+			installGuidelinesWithLock(target, root, skipG, plan.Lock),
 			skillsStep,
 			installMCP(target, root, skipM),
 		},
@@ -72,6 +73,10 @@ func InstallAgent(target Agent, root string, skillsStep StepResult, plan Install
 }
 
 func installGuidelines(target Agent, root string, skip bool) StepResult {
+	return installGuidelinesWithLock(target, root, skip, nil)
+}
+
+func installGuidelinesWithLock(target Agent, root string, skip bool, lock *config.LockFile) StepResult {
 	dest := resolveGuidelinesTarget(target)
 	destPath := filepath.Join(root, dest)
 	if skip {
@@ -84,6 +89,24 @@ func installGuidelines(target Agent, root string, skip bool) StepResult {
 	}
 
 	if len(files) == 0 {
+		if lock != nil && lock.Guidelines != nil {
+			if stored, ok := lock.Guidelines[dest]; ok && stored.Hash != "" {
+				if existingData, err := os.ReadFile(destPath); err == nil {
+					currentManaged, hasMarkers := ExtractManagedSection(string(existingData))
+					if hasMarkers && config.HashString(currentManaged) == stored.Hash {
+						cleaned := removeManagedSection(string(existingData))
+						delete(lock.Guidelines, dest)
+						if strings.TrimSpace(cleaned) == "" {
+							_ = os.Remove(destPath)
+						} else {
+							_ = writeFileWithParents(destPath, []byte(cleaned))
+						}
+					} else if hasMarkers {
+						return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: errors.New("managed guidelines modified by user, cannot safely remove")}
+					}
+				}
+			}
+		}
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusSkipped}
 	}
 
@@ -118,15 +141,74 @@ func installGuidelines(target Agent, root string, skip bool) StepResult {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
 	}
 
-	if err := writeFileWithParents(destPath, []byte(finalContent)); err != nil {
-		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
+	if existingContent != finalContent {
+		if err := writeFileWithParents(destPath, []byte(finalContent)); err != nil {
+			return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
+		}
+	}
+
+	if lock != nil {
+		if lock.Guidelines == nil {
+			lock.Guidelines = make(map[string]config.ResourceLock)
+		}
+		if inner, ok := ExtractManagedSection(finalContent); ok {
+			lock.Guidelines[dest] = config.ResourceLock{Hash: config.HashString(inner)}
+		}
 	}
 
 	return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusOK}
 }
 
+func detectLineEnding(s string) string {
+	if strings.Contains(s, "\r\n") {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+func normalizeLineEndings(s, eol string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	if eol == "\n" {
+		return s
+	}
+	return strings.ReplaceAll(s, "\n", eol)
+}
+
+func ExtractManagedSection(content string) (string, bool) {
+	startIdx := strings.Index(content, ManagedSectionStart)
+	endIdx := strings.Index(content, ManagedSectionEnd)
+	if startIdx == -1 || endIdx == -1 || endIdx < startIdx {
+		return "", false
+	}
+	inner := content[startIdx+len(ManagedSectionStart) : endIdx]
+	return strings.TrimSpace(inner), true
+}
+
+func removeManagedSection(content string) string {
+	startIdx := strings.Index(content, ManagedSectionStart)
+	endIdx := strings.Index(content, ManagedSectionEnd)
+	if startIdx == -1 || endIdx == -1 || endIdx < startIdx {
+		return content
+	}
+	before := content[:startIdx]
+	afterStart := endIdx + len(ManagedSectionEnd)
+	if afterStart+1 < len(content) && content[afterStart:afterStart+2] == "\r\n" {
+		afterStart += 2
+	} else if afterStart < len(content) && content[afterStart] == '\n' {
+		afterStart++
+	}
+	after := content[afterStart:]
+	return strings.TrimRight(before, "\r\n") + after
+}
+
 func injectManagedGuidelines(existingContent, managedContent string) (string, error) {
-	managedBlock := ManagedSectionStart + "\n" + managedContent + "\n" + ManagedSectionEnd
+	eol := detectLineEnding(existingContent)
+	if eol == "\n" && strings.Contains(managedContent, "\r\n") {
+		eol = "\r\n"
+	}
+	normalizedManaged := normalizeLineEndings(managedContent, eol)
+	managedBlock := ManagedSectionStart + eol + normalizedManaged + eol + ManagedSectionEnd
 
 	countBegin := strings.Count(existingContent, ManagedSectionStart)
 	countEnd := strings.Count(existingContent, ManagedSectionEnd)
@@ -148,17 +230,16 @@ func injectManagedGuidelines(existingContent, managedContent string) (string, er
 		}
 
 		// Exact byte preservation of user content outside markers.
-		// Preserve everything before the start marker exactly.
 		before := existingContent[:startIdx]
 		afterStart := endIdx + len(ManagedSectionEnd)
 
-		// Consume the newline immediately following the end marker if present,
-		// because managedBlock ends with its own newline.
-		if afterStart < len(existingContent) && existingContent[afterStart] == '\r' {
+		markerHadNewline := false
+		if afterStart+1 < len(existingContent) && existingContent[afterStart:afterStart+2] == "\r\n" {
+			afterStart += 2
+			markerHadNewline = true
+		} else if afterStart < len(existingContent) && existingContent[afterStart] == '\n' {
 			afterStart++
-		}
-		if afterStart < len(existingContent) && existingContent[afterStart] == '\n' {
-			afterStart++
+			markerHadNewline = true
 		}
 
 		after := existingContent[afterStart:]
@@ -166,28 +247,29 @@ func injectManagedGuidelines(existingContent, managedContent string) (string, er
 		var b strings.Builder
 		b.WriteString(before)
 		b.WriteString(managedBlock)
-		b.WriteString("\n")
+		if markerHadNewline || len(after) > 0 {
+			b.WriteString(eol)
+		}
 		b.WriteString(after)
 		return b.String(), nil
 	}
 
 	// No markers present:
 	if len(existingContent) == 0 {
-		return managedBlock + "\n", nil
+		return managedBlock + eol, nil
 	}
 
 	// Adoption of existing file without markers:
-	// Preserve existing user content byte-for-byte, ensuring separation with newline.
 	var b strings.Builder
 	b.WriteString(existingContent)
 	if !strings.HasSuffix(existingContent, "\n") {
-		b.WriteString("\n")
+		b.WriteString(eol)
 	}
-	if !strings.HasSuffix(existingContent, "\n\n") {
-		b.WriteString("\n")
+	if !strings.HasSuffix(existingContent, "\n\n") && !strings.HasSuffix(existingContent, "\r\n\r\n") {
+		b.WriteString(eol)
 	}
 	b.WriteString(managedBlock)
-	b.WriteString("\n")
+	b.WriteString(eol)
 	return b.String(), nil
 }
 

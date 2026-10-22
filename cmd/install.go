@@ -43,7 +43,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	agentIDs, err := config.ReadLock(lockPath)
+	lock, err := config.ReadFullLock(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			printInitRequired(cmd, ".ai/sync.lock")
@@ -51,6 +51,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+	agentIDs := lock.Agents
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
 	okStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
@@ -74,6 +75,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	plan := agentpkg.NewInstallPlan()
+	plan.Lock = lock
 	if !yes {
 		conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
 		if err != nil {
@@ -97,6 +99,12 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 					switch c.Kind {
 					case agentpkg.KindGuidelines:
 						plan.SkipGuidelines[c.AgentID] = true
+						if c.DestPath != "" {
+							plan.SkipGuidelinesDest[c.DestPath] = true
+						}
+						for _, id := range c.AgentIDs {
+							plan.SkipGuidelines[id] = true
+						}
 					case agentpkg.KindMCP:
 						plan.SkipMCP[c.AgentID] = true
 					case agentpkg.KindSkillsDir:
@@ -128,6 +136,8 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	}
+
+	_ = config.WriteFullLock(lockPath, plan.Lock)
 
 	doneLabel := "agents"
 	if summary.ConfiguredCount == 1 {
