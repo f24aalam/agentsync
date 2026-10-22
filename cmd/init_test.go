@@ -11,48 +11,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
+func TestInitAbortsWithoutWritesWhenReinitCancelled(t *testing.T) {
 	wd := mustGetwd(t)
 	tempDir := t.TempDir()
 	mustChdir(t, tempDir)
 	defer mustChdir(t, wd)
 
-	if err := os.MkdirAll(".ai", 0o755); err != nil {
-		t.Fatalf("mkdir .ai: %v", err)
+	if err := os.MkdirAll(".ai/guidelines", 0o755); err != nil {
+		t.Fatalf("mkdir .ai/guidelines: %v", err)
 	}
-
-	if err := os.WriteFile(".ai/sync.lock", []byte(`agents = ["codex"]`), 0o644); err != nil {
+	if err := os.WriteFile(".ai/guidelines/custom.md", []byte("# Custom Guidelines"), 0o644); err != nil {
+		t.Fatalf("write custom guideline: %v", err)
+	}
+	if err := os.WriteFile(".ai/sync.lock", []byte(`agents = ["codex"]`+"\n"), 0o644); err != nil {
 		t.Fatalf("write existing lockfile: %v", err)
 	}
 
-	restoreOverwrite := runOverwriteConfirm
-	restoreProject := runProjectNamePrompt
-	restoreImport := runImportFlow
-	restoreSurvey := runInitSurvey
+	restoreReinit := runReinitSurvey
 	t.Cleanup(func() {
-		runOverwriteConfirm = restoreOverwrite
-		runProjectNamePrompt = restoreProject
-		runImportFlow = restoreImport
-		runInitSurvey = restoreSurvey
+		runReinitSurvey = restoreReinit
 	})
 
-	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
-		return false, nil
-	}
-
-	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
-		t.Fatalf("project name prompt should not run when overwrite is declined")
-		return "", nil
-	}
-
-	runImportFlow = func(cmd *cobra.Command, detection detect.ProjectDetection) (importPlan, error) {
-		t.Fatalf("import flow should not run when overwrite is declined")
-		return importPlan{}, nil
-	}
-
-	runInitSurvey = func(cmd *cobra.Command, projectName string, askGuidelines bool, askSampleSkill bool, askMCP bool) (initAnswers, error) {
-		t.Fatalf("survey should not run when overwrite is declined")
-		return initAnswers{}, nil
+	runReinitSurvey = func(cmd *cobra.Command, currentAgents []string) (reinitAnswers, error) {
+		return reinitAnswers{}, ErrUserAborted
 	}
 
 	command := newInitCmd()
@@ -63,12 +44,65 @@ func TestInitAbortsWithoutWritesWhenOverwriteDeclined(t *testing.T) {
 		t.Fatalf("init command returned error: %v", err)
 	}
 
-	if _, err := os.Stat(".ai/guidelines/core.md"); !os.IsNotExist(err) {
-		t.Fatalf("expected no scaffold writes, stat error: %v", err)
-	}
+	// Canonical guidelines must not be modified or deleted
+	assertFileContains(t, ".ai/guidelines/custom.md", "# Custom Guidelines")
+	assertFileContains(t, ".ai/sync.lock", `agents = ["codex"]`)
 
 	if !strings.Contains(stdout.String(), "Initialization cancelled") {
 		t.Fatalf("expected cancellation message, got %q", stdout.String())
+	}
+}
+
+func TestInitExistingProjectUpdatesAgentsAndPreservesCanonicalContent(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	if err := os.MkdirAll(".ai/guidelines", 0o755); err != nil {
+		t.Fatalf("mkdir .ai/guidelines: %v", err)
+	}
+	if err := os.WriteFile(".ai/guidelines/custom.md", []byte("# Custom Guidelines"), 0o644); err != nil {
+		t.Fatalf("write custom guideline: %v", err)
+	}
+	if err := os.WriteFile(".ai/sync.lock", []byte(`agents = ["codex"]`+"\n"), 0o644); err != nil {
+		t.Fatalf("write existing lockfile: %v", err)
+	}
+
+	restoreReinit := runReinitSurvey
+	t.Cleanup(func() {
+		runReinitSurvey = restoreReinit
+	})
+
+	runReinitSurvey = func(cmd *cobra.Command, currentAgents []string) (reinitAnswers, error) {
+		if len(currentAgents) != 1 || currentAgents[0] != "codex" {
+			t.Fatalf("expected currentAgents to contain codex, got: %v", currentAgents)
+		}
+		return reinitAnswers{
+			Agents:       []string{"codex", "claude-code"},
+			AddGitignore: true,
+		}, nil
+	}
+
+	command := newInitCmd()
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+
+	if err := command.RunE(command, nil); err != nil {
+		t.Fatalf("init command returned error: %v", err)
+	}
+
+	// Canonical guidelines must be preserved untouched
+	assertFileContains(t, ".ai/guidelines/custom.md", "# Custom Guidelines")
+	// Lockfile must be updated with new agents
+	assertFileContains(t, ".ai/sync.lock", "codex")
+	assertFileContains(t, ".ai/sync.lock", "claude-code")
+	// Gitignore updated
+	assertFileContains(t, ".gitignore", "CLAUDE.md")
+	assertFileContains(t, ".gitignore", "AGENTS.md")
+
+	if !strings.Contains(stdout.String(), "AgentSync already initialized") {
+		t.Fatalf("expected initialized header in stdout, got %q", stdout.String())
 	}
 }
 
@@ -78,21 +112,15 @@ func TestInitCreatesScaffoldAndGitignore(t *testing.T) {
 	mustChdir(t, tempDir)
 	defer mustChdir(t, wd)
 
-	restoreOverwrite := runOverwriteConfirm
 	restoreProject := runProjectNamePrompt
 	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 
 	t.Cleanup(func() {
-		runOverwriteConfirm = restoreOverwrite
 		runProjectNamePrompt = restoreProject
 		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	})
-
-	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
-		return true, nil
-	}
 
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		if defaultName != filepath.Base(tempDir) {
@@ -149,21 +177,15 @@ func TestInitAllowsEmptyAgentSelection(t *testing.T) {
 	mustChdir(t, tempDir)
 	defer mustChdir(t, wd)
 
-	restoreOverwrite := runOverwriteConfirm
 	restoreProject := runProjectNamePrompt
 	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 
 	t.Cleanup(func() {
-		runOverwriteConfirm = restoreOverwrite
 		runProjectNamePrompt = restoreProject
 		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	})
-
-	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
-		return true, nil
-	}
 
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		return "AgentSync", nil

@@ -157,27 +157,20 @@ func (e *integrationEnv) RunInstall(args ...string) (string, string, error) {
 
 // RunInit executes `agentsync init` with mocked wizard hooks to allow deterministic testing.
 func (e *integrationEnv) RunInit(
-	overwriteConfirm bool,
 	projectName string,
 	plan importPlan,
 	answers initAnswers,
 ) (string, string, error) {
 	e.T.Helper()
 
-	restoreOverwrite := runOverwriteConfirm
 	restoreProject := runProjectNamePrompt
 	restoreImport := runImportFlow
 	restoreSurvey := runInitSurvey
 	defer func() {
-		runOverwriteConfirm = restoreOverwrite
 		runProjectNamePrompt = restoreProject
 		runImportFlow = restoreImport
 		runInitSurvey = restoreSurvey
 	}()
-
-	runOverwriteConfirm = func(cmd *cobra.Command) (bool, error) {
-		return overwriteConfirm, nil
-	}
 
 	runProjectNamePrompt = func(cmd *cobra.Command, defaultName string) (string, error) {
 		if projectName != "" {
