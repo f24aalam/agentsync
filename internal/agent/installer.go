@@ -90,24 +90,6 @@ func installGuidelinesWithLock(target Agent, root string, skip bool, lock *confi
 	}
 
 	if len(files) == 0 {
-		if lock != nil && lock.Guidelines != nil {
-			if stored, ok := lock.Guidelines[dest]; ok && stored.Hash != "" {
-				if existingData, err := os.ReadFile(destPath); err == nil {
-					currentManaged, hasMarkers := ExtractManagedSection(string(existingData))
-					if hasMarkers && config.HashString(currentManaged) == stored.Hash {
-						cleaned := removeManagedSection(string(existingData))
-						delete(lock.Guidelines, dest)
-						if strings.TrimSpace(cleaned) == "" {
-							_ = os.Remove(destPath)
-						} else {
-							_ = writeFileWithParents(destPath, []byte(cleaned))
-						}
-					} else if hasMarkers {
-						return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: errors.New("managed guidelines modified by user, cannot safely remove")}
-					}
-				}
-			}
-		}
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusSkipped}
 	}
 
@@ -135,6 +117,15 @@ func installGuidelinesWithLock(target Agent, root string, skip bool, lock *confi
 		existingContent = string(existingData)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return StepResult{Name: "Guidelines", Target: dest, Status: StepStatusError, Err: err}
+	}
+
+	if (target.ID == "cursor" || strings.HasSuffix(dest, ".mdc")) && !strings.HasPrefix(strings.TrimSpace(existingContent), "---") {
+		frontmatter := "---\ndescription: Project Guidelines\nglobs: *\nalwaysApply: true\n---\n\n"
+		if existingContent != "" {
+			existingContent = frontmatter + existingContent
+		} else {
+			existingContent = frontmatter
+		}
 	}
 
 	finalContent, err := injectManagedGuidelines(existingContent, mergedContent)
@@ -1163,25 +1154,31 @@ func resolveGuidelinesTarget(target Agent) string {
 }
 
 func markdownFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if _, err := os.Stat(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-
 		return nil, err
 	}
 
-	files := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
-			continue
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-
-		files = append(files, filepath.Join(dir, entry.Name()))
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Ext(d.Name()) == ".md" {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	slices.Sort(files)
 
+	slices.Sort(files)
 	return files, nil
 }
 

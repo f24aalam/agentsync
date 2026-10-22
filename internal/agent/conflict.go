@@ -190,6 +190,15 @@ func guidelinesConflict(root string, a Agent) bool {
 	}
 	existingContent := string(existingData)
 
+	if (a.ID == "cursor" || strings.HasSuffix(dest, ".mdc")) && !strings.HasPrefix(strings.TrimSpace(existingContent), "---") {
+		frontmatter := "---\ndescription: Project Guidelines\nglobs: *\nalwaysApply: true\n---\n\n"
+		if existingContent != "" {
+			existingContent = frontmatter + existingContent
+		} else {
+			existingContent = frontmatter
+		}
+	}
+
 	files, err := markdownFiles(filepath.Join(root, guidelinesSourceDir))
 	if err != nil || len(files) == 0 {
 		return false

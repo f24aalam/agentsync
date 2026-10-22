@@ -432,7 +432,7 @@ func TestInjectManagedGuidelines_LineEndingsAndDrift(t *testing.T) {
 	}
 }
 
-func TestInstallGuidelines_SafelyPrunesWhenEmptied(t *testing.T) {
+func TestInstallGuidelines_LeavesUntouchedWhenEmptied(t *testing.T) {
 	wd := mustGetwd(t)
 	tempDir := t.TempDir()
 	mustChdir(t, tempDir)
@@ -449,59 +449,23 @@ func TestInstallGuidelines_SafelyPrunesWhenEmptied(t *testing.T) {
 	if res.Status != StepStatusOK {
 		t.Fatalf("expected ok, got %+v", res)
 	}
-	if lock.Guidelines["CLAUDE.md"].Hash == "" {
-		t.Fatalf("expected CLAUDE.md recorded in lock")
-	}
 
 	// Remove guidelines from .ai/guidelines
 	_ = os.Remove(".ai/guidelines/a.md")
 
-	// Run installGuidelines again with lock
+	// In v1, install skips when canonical source is empty and leaves previously distributed output untouched
 	res2 := installGuidelinesWithLock(target, ".", false, lock)
 	if res2.Status != StepStatusSkipped {
-		t.Fatalf("expected skipped status on prune, got %+v", res2)
+		t.Fatalf("expected skipped status when canonical guidelines are empty, got %+v", res2)
 	}
 
-	// Since CLAUDE.md had only managed section, it should be removed or emptied
-	if _, err := os.Stat("CLAUDE.md"); !os.IsNotExist(err) {
-		data, _ := os.ReadFile("CLAUDE.md")
-		if strings.TrimSpace(string(data)) != "" {
-			t.Fatalf("expected CLAUDE.md to be pruned, found: %q", string(data))
-		}
+	// CLAUDE.md must remain untouched
+	if _, err := os.Stat("CLAUDE.md"); err != nil {
+		t.Fatalf("expected CLAUDE.md to remain untouched, got err: %v", err)
 	}
-	if _, ok := lock.Guidelines["CLAUDE.md"]; ok {
-		t.Fatalf("expected CLAUDE.md removed from lock")
-	}
-}
-
-func TestInstallGuidelines_RefusesToPruneUserModified(t *testing.T) {
-	wd := mustGetwd(t)
-	tempDir := t.TempDir()
-	mustChdir(t, tempDir)
-	defer mustChdir(t, wd)
-
-	// Setup initial guideline
-	mustWriteFile(t, ".ai/guidelines/a.md", "content A")
-	target, _ := ByID("claude-code")
-	lock := config.NewLockFile()
-
-	res := installGuidelinesWithLock(target, ".", false, lock)
-	if res.Status != StepStatusOK {
-		t.Fatalf("expected ok, got %+v", res)
-	}
-
-	// User modifies the managed block directly in CLAUDE.md
-	mustWriteFile(t, "CLAUDE.md", ManagedSectionStart+"\nUser modified content inside markers\n"+ManagedSectionEnd+"\n")
-
-	// Remove .ai/guidelines
-	_ = os.Remove(".ai/guidelines/a.md")
-
-	res2 := installGuidelinesWithLock(target, ".", false, lock)
-	if res2.Status != StepStatusError {
-		t.Fatalf("expected error when trying to prune user-modified managed section, got %+v", res2)
-	}
-	if !strings.Contains(res2.Err.Error(), "user") {
-		t.Fatalf("expected error mentioning user modification, got: %v", res2.Err)
+	data, _ := os.ReadFile("CLAUDE.md")
+	if !strings.Contains(string(data), "content A") {
+		t.Fatalf("expected CLAUDE.md content to be preserved, found: %q", string(data))
 	}
 }
 
