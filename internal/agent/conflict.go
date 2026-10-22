@@ -3,27 +3,30 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/f24aalam/agentsync/internal/config"
 )
 
 // InstallConflict describes whether a category needs a user prompt (would write + target exists).
 type InstallConflict struct {
-	AgentID   string       // agent ID (empty for skills-dir–only rows)
-	SkillsDir string       // set when Kind is KindSkillPackage or KindSkillsDir
-	SkillName string       // set when Kind is KindSkillPackage
-	Kind      ConflictKind
-	DestPath  string       // set for guidelines destination
+	AgentID            string       // agent ID (empty for skills-dir–only rows)
+	SkillsDir          string       // set when Kind is KindSkillPackage or KindSkillsDir
+	SkillName          string       // set when Kind is KindSkillPackage
+	Kind               ConflictKind
+	DestPath           string       // set for guidelines destination or MCP destination
 	// AgentIDs lists agents sharing SkillsDir when Kind is KindSkillPackage/KindSkillsDir, or sharing DestPath for guidelines.
-	AgentIDs  []string
-	Question  string
-	StepKey   string
-	IsManaged bool // true if this resource is known to be managed by AgentSync
+	AgentIDs           []string
+	Question           string
+	StepKey            string
+	IsManaged          bool         // true if this resource is known to be managed by AgentSync
+	ConflictingServers []string     // set when Kind is KindMCP
 }
 
 // ConflictKind identifies which install step may conflict.
@@ -44,6 +47,7 @@ func DetectInstallConflicts(agents []Agent, root string) ([]InstallConflict, err
 	}
 
 	var out []InstallConflict
+	lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
 
 	wouldG, err := wouldInstallGuidelines(root)
 	if err != nil {
@@ -86,7 +90,6 @@ func DetectInstallConflicts(agents []Agent, root string) ([]InstallConflict, err
 		seenSkills := make(map[string]bool)
 		srcSkillsRoot := filepath.Join(root, skillsSourceDir)
 		srcSkillEntries, _ := os.ReadDir(srcSkillsRoot)
-		lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
 
 		for _, raw := range UniqueSkillsDirs(agents) {
 			if raw == "" {
@@ -138,14 +141,66 @@ func DetectInstallConflicts(agents []Agent, root string) ([]InstallConflict, err
 		}
 	}
 
-	for _, a := range agents {
-		if wouldM && mcpConflict(root, a) {
-			out = append(out, InstallConflict{
-				AgentID:  a.ID,
-				Kind:     KindMCP,
-				StepKey:  "install/" + a.ID + "/mcp",
-				Question: a.Name + ": MCP config file(s) already exist. Merge/overwrite from .ai/mcp.toml?",
-			})
+	if wouldM {
+		mcpPath := filepath.Join(root, mcpSourcePath)
+		mcpCfg, err := config.ReadMCP(mcpPath)
+		if err == nil && len(mcpCfg.Servers) > 0 {
+			seenMCPDest := make(map[string]bool)
+			for _, a := range agents {
+				destPaths, err := resolveMCPDestPaths(a)
+				if err != nil {
+					continue
+				}
+				for _, dest := range destPaths {
+					if strings.TrimSpace(dest) == "" {
+						continue
+					}
+					destRel := dest
+					if filepath.IsAbs(destRel) {
+						rel, err := filepath.Rel(root, destRel)
+						if err == nil {
+							destRel = rel
+						}
+					}
+					destRel = filepath.Clean(destRel)
+					if seenMCPDest[destRel] {
+						continue
+					}
+					seenMCPDest[destRel] = true
+
+					conflicting, hasUnmanagedConflict, isMalformed, err := findConflictingMCPServers(root, a, destRel, mcpCfg, lock)
+					if err != nil {
+						return nil, err
+					}
+					if isMalformed {
+						continue
+					}
+					if len(conflicting) == 0 {
+						continue
+					}
+
+					var q strings.Builder
+					q.WriteString(fmt.Sprintf("%s MCP configuration differs:\n%s\n\nConflicting servers:\n", a.Name, destRel))
+					for _, s := range conflicting {
+						q.WriteString(fmt.Sprintf("- %s\n", s))
+					}
+					q.WriteString("\nReplace these entries using .ai/mcp.toml?")
+
+					ids := agentIDsUsingMCPDest(agents, destRel, root)
+					slices.Sort(ids)
+
+					out = append(out, InstallConflict{
+						AgentID:            a.ID,
+						AgentIDs:           ids,
+						Kind:               KindMCP,
+						DestPath:           destRel,
+						StepKey:            "install/" + a.ID + "/mcp",
+						Question:           q.String(),
+						IsManaged:          !hasUnmanagedConflict,
+						ConflictingServers: conflicting,
+					})
+				}
+			}
 		}
 	}
 
@@ -308,6 +363,31 @@ func agentNamesUsingGuidelinesDest(agents []Agent, dest string) []string {
 	return names
 }
 
+func agentIDsUsingMCPDest(agents []Agent, destPath string, root string) []string {
+	var ids []string
+	cleanDest := filepath.Clean(destPath)
+	for _, a := range agents {
+		destPaths, err := resolveMCPDestPaths(a)
+		if err != nil {
+			continue
+		}
+		for _, d := range destPaths {
+			destRel := d
+			if filepath.IsAbs(destRel) {
+				rel, err := filepath.Rel(root, destRel)
+				if err == nil {
+					destRel = rel
+				}
+			}
+			if filepath.Clean(destRel) == cleanDest {
+				ids = append(ids, a.ID)
+				break
+			}
+		}
+	}
+	return ids
+}
+
 func skillsDirConflict(root string, skillsDir string) bool {
 	if skillsDir == "" {
 		return false
@@ -332,7 +412,7 @@ func skillsDirConflict(root string, skillsDir string) bool {
 }
 
 func mcpConflict(root string, a Agent) bool {
-	paths, err := resolveMCPDestPaths(a)
+	destPaths, err := resolveMCPDestPaths(a)
 	if err != nil {
 		return false
 	}
@@ -342,100 +422,150 @@ func mcpConflict(root string, a Agent) bool {
 		return false
 	}
 
-	lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
-
-	for _, p := range paths {
+	for _, p := range destPaths {
 		if strings.TrimSpace(p) == "" {
 			continue
 		}
-		check := p
-		if !filepath.IsAbs(check) {
-			check = filepath.Join(root, check)
-		}
-		st, err := os.Stat(check)
-		if err != nil || st.IsDir() {
-			continue
-		}
-
-		normKey, _ := filepath.Rel(root, check)
-
-		existingData, err := os.ReadFile(check)
-		if err != nil {
-			continue
-		}
-
-		if a.MCPFormat == MCPFormatTOML {
-			updated, err := updateTomlMCPServers(string(existingData), cfg.Servers)
-			if err != nil {
-				continue
-			}
-			if strings.TrimSpace(updated) == strings.TrimSpace(string(existingData)) {
-				continue
-			}
-			if lock == nil || lock.MCP == nil || len(lock.MCP[normKey]) == 0 {
-				return true
-			}
-			continue
-		}
-
-		// JSON format
-		var rootMap map[string]any
-		if err := json.Unmarshal(existingData, &rootMap); err != nil {
-			continue
-		}
-		rootKey, _ := mcpJSONRoot(a)
-		existingServers, _ := rootMap[rootKey].(map[string]any)
-
-		managed := make(map[string]any, len(cfg.Servers))
-		for name, server := range cfg.Servers {
-			rendered := renderManagedServerJSON(a, name, server)
-			if rendered != nil {
-				managed[name] = rendered
+		destRel := p
+		if filepath.IsAbs(destRel) {
+			rel, err := filepath.Rel(root, destRel)
+			if err == nil {
+				destRel = rel
 			}
 		}
-
-		allMatch := true
-		for name, val := range managed {
-			curr, exists := existingServers[name]
-			if !exists {
-				allMatch = false
-				break
-			}
-			valBytes, _ := json.Marshal(val)
-			currBytes, _ := json.Marshal(curr)
-			if !bytes.Equal(valBytes, currBytes) {
-				allMatch = false
-				break
-			}
-		}
-
-		if allMatch {
-			continue
-		}
-
-		if lock == nil || lock.MCP == nil || len(lock.MCP[normKey]) == 0 {
+		conflicting, _, _, err := findConflictingMCPServers(root, a, destRel, cfg, nil)
+		if err == nil && len(conflicting) > 0 {
 			return true
 		}
+	}
+	return false
+}
 
-		for name, val := range managed {
-			curr, exists := existingServers[name]
-			if exists {
-				valBytes, _ := json.Marshal(val)
-				currBytes, _ := json.Marshal(curr)
-				if !bytes.Equal(valBytes, currBytes) {
-					if stored, ok := lock.MCP[normKey][name]; ok {
-						if config.HashBytes(currBytes) != stored.Hash {
-							return true
-						}
-					} else {
-						return true
+func findConflictingMCPServers(root string, a Agent, dest string, cfg config.MCPConfig, lock *config.LockFile) (conflicting []string, hasUnmanagedConflict bool, isMalformed bool, err error) {
+	checkPath := filepath.Join(root, dest)
+	data, err := os.ReadFile(checkPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, false, nil
+		}
+		return nil, false, false, err
+	}
+
+	if a.MCPFormat == MCPFormatTOML {
+		var decoded map[string]any
+		if _, err := toml.Decode(string(data), &decoded); err != nil {
+			return nil, false, true, nil
+		}
+		existingServers, _ := decoded["mcp_servers"].(map[string]any)
+
+		for name, server := range cfg.Servers {
+			if strings.TrimSpace(server.Command) == "" {
+				continue
+			}
+			existingServerRaw, exists := existingServers[name]
+			if !exists {
+				conflicting = append(conflicting, name)
+				continue
+			}
+			existingServerMap, ok := existingServerRaw.(map[string]any)
+			if !ok {
+				conflicting = append(conflicting, name)
+				if lock == nil || !lock.IsMCPManaged(dest, name) {
+					hasUnmanagedConflict = true
+				}
+				continue
+			}
+
+			// Compare command
+			existingCmd, _ := existingServerMap["command"].(string)
+			if existingCmd != server.Command {
+				conflicting = append(conflicting, name)
+				if lock == nil || !lock.IsMCPManaged(dest, name) {
+					hasUnmanagedConflict = true
+				}
+				continue
+			}
+
+			// Compare args
+			var existingArgs []string
+			if rawArgs, ok := existingServerMap["args"].([]any); ok {
+				for _, arg := range rawArgs {
+					if s, ok := arg.(string); ok {
+						existingArgs = append(existingArgs, s)
 					}
 				}
+			}
+			if !slices.Equal(existingArgs, server.Args) {
+				conflicting = append(conflicting, name)
+				if lock == nil || !lock.IsMCPManaged(dest, name) {
+					hasUnmanagedConflict = true
+				}
+				continue
+			}
+
+			// Compare env
+			existingEnv := make(map[string]string)
+			if rawEnv, ok := existingServerMap["env"].(map[string]any); ok {
+				for k, v := range rawEnv {
+					if s, ok := v.(string); ok {
+						existingEnv[k] = s
+					}
+				}
+			}
+			envMatch := len(existingEnv) == len(server.Env)
+			if envMatch {
+				for k, v := range server.Env {
+					if existingEnv[k] != v {
+						envMatch = false
+						break
+					}
+				}
+			}
+			if !envMatch {
+				conflicting = append(conflicting, name)
+				if lock == nil || !lock.IsMCPManaged(dest, name) {
+					hasUnmanagedConflict = true
+				}
+				continue
+			}
+		}
+
+		slices.Sort(conflicting)
+		return conflicting, hasUnmanagedConflict, false, nil
+	}
+
+	// JSON format
+	var rootMap map[string]any
+	if err := json.Unmarshal(data, &rootMap); err != nil {
+		return nil, false, true, nil
+	}
+
+	rootKey, _ := mcpJSONRoot(a)
+	existingServers, _ := rootMap[rootKey].(map[string]any)
+
+	for name, server := range cfg.Servers {
+		rendered := renderManagedServerJSON(a, name, server)
+		if rendered == nil {
+			continue
+		}
+		existingServer, exists := existingServers[name]
+		if !exists {
+			conflicting = append(conflicting, name)
+			continue
+		}
+
+		valBytes, _ := json.Marshal(rendered)
+		currBytes, _ := json.Marshal(existingServer)
+		if !bytes.Equal(valBytes, currBytes) {
+			conflicting = append(conflicting, name)
+			if lock == nil || !lock.IsMCPManaged(dest, name) {
+				hasUnmanagedConflict = true
 			}
 		}
 	}
 
-	return false
+	slices.Sort(conflicting)
+	return conflicting, hasUnmanagedConflict, false, nil
 }
 
 func fileExistsNonEmpty(path string) bool {

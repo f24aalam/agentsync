@@ -57,13 +57,12 @@ func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
 			writtenGuidelines[destG] = gStep
 		}
 
-		skipM := plan.SkipMCP[target.ID]
 		result := InstallResult{
 			Agent: target,
 			Steps: []StepResult{
 				gStep,
 				skillsStep,
-				installMCPWithLock(target, root, skipM, plan.Lock),
+				installMCPWithPlan(target, root, plan),
 			},
 		}
 		results = append(results, result)

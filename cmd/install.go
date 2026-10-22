@@ -27,9 +27,11 @@ func defaultRunInstallStepflow(steps []stepflow.Step) (stepflow.Result, error) {
 
 func newInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install synced AI configuration for the selected agents",
-		RunE:  runInstallCommand,
+		Use:           "install",
+		Short:         "Install synced AI configuration for the selected agents",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          runInstallCommand,
 	}
 	cmd.Flags().BoolP("yes", "y", false, "Overwrite existing agent files without prompting (non-interactive)")
 	return cmd
@@ -90,6 +92,14 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 					pkgKey := c.SkillsDir + "/" + c.SkillName
 					plan.SkipSkillPackages[pkgKey] = true
 				}
+			case agentpkg.KindMCP:
+				if !c.IsManaged {
+					if c.DestPath != "" {
+						plan.SkipMCPDest[c.DestPath] = true
+					} else {
+						plan.SkipMCP[c.AgentID] = true
+					}
+				}
 			}
 		}
 	} else if len(conflicts) > 0 {
@@ -122,7 +132,11 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 				case agentpkg.KindSkillsDir:
 					plan.SkipSkillsDir[c.SkillsDir] = true
 				case agentpkg.KindMCP:
-					plan.SkipMCP[c.AgentID] = true
+					if c.DestPath != "" {
+						plan.SkipMCPDest[c.DestPath] = true
+					} else {
+						plan.SkipMCP[c.AgentID] = true
+					}
 				}
 			}
 		}

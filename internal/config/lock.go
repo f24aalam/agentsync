@@ -67,6 +67,37 @@ func (l *LockFile) RecordSkillPackage(destSkillsDir, skillName string) {
 	l.Skills[normPkg] = ResourceLock{}
 }
 
+// IsMCPManaged reports whether an MCP server name in destFile is recorded as managed.
+func (l *LockFile) IsMCPManaged(destFile, serverName string) bool {
+	if l == nil || l.MCP == nil {
+		return false
+	}
+	cleanDest := filepath.Clean(destFile)
+	for destKey, servers := range l.MCP {
+		if filepath.Clean(destKey) == cleanDest {
+			if _, ok := servers[serverName]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RecordMCP records an MCP server name in destFile as managed.
+func (l *LockFile) RecordMCP(destFile, serverName string) {
+	if l == nil {
+		return
+	}
+	if l.MCP == nil {
+		l.MCP = make(map[string]map[string]ResourceLock)
+	}
+	cleanDest := filepath.Clean(destFile)
+	if l.MCP[cleanDest] == nil {
+		l.MCP[cleanDest] = make(map[string]ResourceLock)
+	}
+	l.MCP[cleanDest][serverName] = ResourceLock{}
+}
+
 // HashBytes computes the SHA-256 hex string of data.
 func HashBytes(data []byte) string {
 	sum := sha256.Sum256(data)

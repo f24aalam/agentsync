@@ -526,7 +526,14 @@ func installMCP(target Agent, root string, skip bool) StepResult {
 }
 
 func installMCPWithLock(target Agent, root string, skip bool, lock *config.LockFile) StepResult {
-	if skip {
+	plan := NewInstallPlan()
+	plan.Lock = lock
+	plan.SkipMCP[target.ID] = skip
+	return installMCPWithPlan(target, root, plan)
+}
+
+func installMCPWithPlan(target Agent, root string, plan InstallPlan) StepResult {
+	if plan.SkipMCP[target.ID] {
 		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
 	}
 
@@ -551,6 +558,7 @@ func installMCPWithLock(target Agent, root string, skip bool, lock *config.LockF
 	}
 
 	var firstErr error
+	allSkipped := true
 	for _, dest := range destPaths {
 		if firstErr != nil {
 			continue
@@ -565,17 +573,27 @@ func installMCPWithLock(target Agent, root string, skip bool, lock *config.LockF
 			destWrite = filepath.Join(root, destWrite)
 		}
 		normKey, _ := filepath.Rel(root, destWrite)
+		normKey = filepath.Clean(normKey)
+
+		if plan.SkipMCPDest != nil && (plan.SkipMCPDest[normKey] || plan.SkipMCPDest[filepath.Clean(dest)]) {
+			continue
+		}
+		allSkipped = false
 
 		if target.MCPFormat == MCPFormatTOML {
-			if err := mergeOrWriteTomlMCP(destWrite, target, cfg, lock, normKey); err != nil {
+			if err := mergeOrWriteTomlMCP(destWrite, target, cfg, plan.Lock, normKey); err != nil {
 				firstErr = err
 			}
 			continue
 		}
 
-		if err := mergeOrWriteJSONMCP(destWrite, target, cfg, lock, normKey); err != nil {
+		if err := mergeOrWriteJSONMCP(destWrite, target, cfg, plan.Lock, normKey); err != nil {
 			firstErr = err
 		}
+	}
+
+	if allSkipped && len(destPaths) > 0 {
+		return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
 	}
 
 	if firstErr != nil {

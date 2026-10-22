@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -920,5 +921,106 @@ func TestSymlinks_ValidationAndSafetyCases(t *testing.T) {
 	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "indirect.txt"), filepath.Join(dstRoot, "indirect.txt"), pkgRoot)
 	if err == nil {
 		t.Fatalf("expected indirect escaping symlink to be rejected")
+	}
+}
+
+func TestMCP_DestinationAwareConflictsAndDecisions(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// Canonical config
+	mustWriteFile(t, ".ai/mcp.toml", `
+[servers.fetch]
+type = "local"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-fetch"]
+
+[servers.postgres]
+type = "local"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-postgres"]
+`)
+
+	// Existing Codex config with an unmanaged "fetch" (different cmd), an unmanaged "user-tool", and custom setting
+	existingCodex := `# Codex preferences
+model = "o3-mini"
+
+[mcp_servers.fetch]
+command = "old-fetch"
+
+[mcp_servers.user_tool]
+command = "my-custom-tool"
+`
+	mustWriteFile(t, ".codex/config.toml", existingCodex)
+
+	codex, _ := ByID("codex")
+	conflicts, err := DetectInstallConflicts([]Agent{codex}, ".")
+	if err != nil {
+		t.Fatalf("unexpected error detecting conflicts: %v", err)
+	}
+
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d: %+v", len(conflicts), conflicts)
+	}
+	c := conflicts[0]
+	if c.Kind != KindMCP {
+		t.Fatalf("expected KindMCP, got %v", c.Kind)
+	}
+	if !slices.Equal(c.ConflictingServers, []string{"fetch", "postgres"}) {
+		t.Errorf("expected conflicting servers [fetch postgres], got %v", c.ConflictingServers)
+	}
+	expectedPromptSnippet := "Codex MCP configuration differs:\n.codex/config.toml\n\nConflicting servers:\n- fetch\n- postgres\n\nReplace these entries using .ai/mcp.toml?"
+	if c.Question != expectedPromptSnippet {
+		t.Errorf("prompt mismatch.\nWant:\n%s\nGot:\n%s", expectedPromptSnippet, c.Question)
+	}
+	if c.IsManaged {
+		t.Errorf("expected IsManaged to be false since fetch is unmanaged in destination")
+	}
+
+	// 1. Decline overwrite: destination must remain untouched
+	planDecline := NewInstallPlan()
+	planDecline.SkipMCPDest[".codex/config.toml"] = true
+	resDecline := installMCPWithPlan(codex, ".", planDecline)
+	if resDecline.Status != StepStatusSkipped {
+		t.Fatalf("expected skipped status, got %+v", resDecline)
+	}
+	contentAfterDecline, _ := os.ReadFile(".codex/config.toml")
+	if string(contentAfterDecline) != existingCodex {
+		t.Fatalf("declined install modified destination file!")
+	}
+
+	// 2. Approve overwrite: managed servers updated/inserted, unmanaged and settings preserved
+	planApprove := NewInstallPlan()
+	resApprove := installMCPWithPlan(codex, ".", planApprove)
+	if resApprove.Status != StepStatusOK {
+		t.Fatalf("expected ok, got %+v", resApprove)
+	}
+	contentApproved, _ := os.ReadFile(".codex/config.toml")
+	approvedStr := string(contentApproved)
+
+	if !strings.Contains(approvedStr, `model = "o3-mini"`) {
+		t.Errorf("unrelated settings lost after approve! Content:\n%s", approvedStr)
+	}
+	if !strings.Contains(approvedStr, "user_tool") || !strings.Contains(approvedStr, "my-custom-tool") {
+		t.Errorf("unmanaged server lost after approve! Content:\n%s", approvedStr)
+	}
+	if !strings.Contains(approvedStr, "@modelcontextprotocol/server-fetch") {
+		t.Errorf("managed server fetch not updated! Content:\n%s", approvedStr)
+	}
+	if !strings.Contains(approvedStr, "@modelcontextprotocol/server-postgres") {
+		t.Errorf("managed server postgres not inserted! Content:\n%s", approvedStr)
+	}
+
+	// 3. Repeating install when already identical must be skipped (no conflict)
+	conflictsRepeat, err := DetectInstallConflicts([]Agent{codex}, ".")
+	if err != nil {
+		t.Fatalf("repeat conflict check failed: %v", err)
+	}
+	for _, cr := range conflictsRepeat {
+		if cr.Kind == KindMCP {
+			t.Errorf("expected no MCP conflict when already identical, got: %+v", cr)
+		}
 	}
 }
