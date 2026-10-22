@@ -76,40 +76,53 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 
 	plan := agentpkg.NewInstallPlan()
 	plan.Lock = lock
-	if !yes {
-		conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
+
+	conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
+	if err != nil {
+		return err
+	}
+
+	if yes {
+		for _, c := range conflicts {
+			switch c.Kind {
+			case agentpkg.KindSkillPackage:
+				if !c.IsManaged {
+					pkgKey := c.SkillsDir + "/" + c.SkillName
+					plan.SkipSkillPackages[pkgKey] = true
+				}
+			}
+		}
+	} else if len(conflicts) > 0 {
+		steps := make([]stepflow.Step, 0, len(conflicts))
+		for _, c := range conflicts {
+			steps = append(steps, stepflow.Confirm(c.StepKey, c.Question).Default("No"))
+		}
+		res, err := runInstallStepflow(steps)
 		if err != nil {
+			if errors.Is(err, stepflow.ErrCancelled) {
+				return ErrUserAborted
+			}
 			return err
 		}
-		if len(conflicts) > 0 {
-			steps := make([]stepflow.Step, 0, len(conflicts))
-			for _, c := range conflicts {
-				steps = append(steps, stepflow.Confirm(c.StepKey, c.Question).Default("No"))
-			}
-			res, err := runInstallStepflow(steps)
-			if err != nil {
-				if errors.Is(err, stepflow.ErrCancelled) {
-					return ErrUserAborted
-				}
-				return err
-			}
-			for _, c := range conflicts {
-				overwrite := res.Bool(c.StepKey)
-				if !overwrite {
-					switch c.Kind {
-					case agentpkg.KindGuidelines:
-						plan.SkipGuidelines[c.AgentID] = true
-						if c.DestPath != "" {
-							plan.SkipGuidelinesDest[c.DestPath] = true
-						}
-						for _, id := range c.AgentIDs {
-							plan.SkipGuidelines[id] = true
-						}
-					case agentpkg.KindMCP:
-						plan.SkipMCP[c.AgentID] = true
-					case agentpkg.KindSkillsDir:
-						plan.SkipSkillsDir[c.SkillsDir] = true
+		for _, c := range conflicts {
+			overwrite := res.Bool(c.StepKey)
+			if !overwrite {
+				switch c.Kind {
+				case agentpkg.KindGuidelines:
+					plan.SkipGuidelines[c.AgentID] = true
+					if c.DestPath != "" {
+						plan.SkipGuidelinesDest[c.DestPath] = true
 					}
+					for _, id := range c.AgentIDs {
+						plan.SkipGuidelines[id] = true
+					}
+				case agentpkg.KindSkillPackage:
+					pkgKey := c.SkillsDir + "/" + c.SkillName
+					plan.SkipSkillPackages[pkgKey] = true
+				case agentpkg.KindSkillsDir:
+					plan.SkipSkillsDir[c.SkillsDir] = true
+				case agentpkg.KindMCP:
+					plan.SkipMCP[c.AgentID] = true
 				}
 			}
 		}

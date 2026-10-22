@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,13 +15,15 @@ import (
 // InstallConflict describes whether a category needs a user prompt (would write + target exists).
 type InstallConflict struct {
 	AgentID   string       // agent ID (empty for skills-dir–only rows)
-	SkillsDir string       // set when Kind is KindSkillsDir
+	SkillsDir string       // set when Kind is KindSkillPackage or KindSkillsDir
+	SkillName string       // set when Kind is KindSkillPackage
 	Kind      ConflictKind
 	DestPath  string       // set for guidelines destination
-	// AgentIDs lists agents sharing SkillsDir when Kind is KindSkillsDir, or sharing DestPath for guidelines.
-	AgentIDs []string
-	Question string
-	StepKey  string
+	// AgentIDs lists agents sharing SkillsDir when Kind is KindSkillPackage/KindSkillsDir, or sharing DestPath for guidelines.
+	AgentIDs  []string
+	Question  string
+	StepKey   string
+	IsManaged bool // true if this resource is known to be managed by AgentSync
 }
 
 // ConflictKind identifies which install step may conflict.
@@ -29,6 +32,7 @@ type ConflictKind int
 const (
 	KindGuidelines ConflictKind = iota
 	KindSkillsDir
+	KindSkillPackage
 	KindMCP
 )
 
@@ -62,45 +66,75 @@ func DetectInstallConflicts(agents []Agent, root string) ([]InstallConflict, err
 			ids := agentIDsUsingGuidelinesDest(agents, dest)
 			slices.Sort(ids)
 			question := a.Name + ": guidelines file already exists. Overwrite with merged .ai/guidelines?"
-			if len(ids) > 1 {
-				names := agentNamesUsingGuidelinesDest(agents, dest)
-				question = a.Name + ": guidelines file already exists. Overwrite with merged .ai/guidelines?"
-				_ = names
-			}
+
+			destData, _ := os.ReadFile(filepath.Join(root, dest))
+			_, hasMarkers := ExtractManagedSection(string(destData))
+
 			out = append(out, InstallConflict{
-				AgentID:  a.ID,
-				Kind:     KindGuidelines,
-				DestPath: dest,
-				AgentIDs: ids,
-				StepKey:  "install/" + a.ID + "/guidelines",
-				Question: question,
+				AgentID:   a.ID,
+				Kind:      KindGuidelines,
+				DestPath:  dest,
+				AgentIDs:  ids,
+				StepKey:   "install/" + a.ID + "/guidelines",
+				Question:  question,
+				IsManaged: hasMarkers,
 			})
 		}
 	}
 
-	seenSkills := make(map[string]bool)
-	for _, raw := range UniqueSkillsDirs(agents) {
-		if raw == "" {
-			continue
-		}
-		dirKey := SkillDirKey(raw)
-		if seenSkills[dirKey] {
-			continue
-		}
-		seenSkills[dirKey] = true
-		if !skillsDirUsedBySupportedAgentKey(agents, dirKey) {
-			continue
-		}
-		if wouldS && skillsDirConflict(root, dirKey) {
+	if wouldS {
+		seenSkills := make(map[string]bool)
+		srcSkillsRoot := filepath.Join(root, skillsSourceDir)
+		srcSkillEntries, _ := os.ReadDir(srcSkillsRoot)
+		lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
+
+		for _, raw := range UniqueSkillsDirs(agents) {
+			if raw == "" {
+				continue
+			}
+			dirKey := SkillDirKey(raw)
+			if seenSkills[dirKey] {
+				continue
+			}
+			seenSkills[dirKey] = true
+			if !skillsDirUsedBySupportedAgentKey(agents, dirKey) {
+				continue
+			}
+
 			ids := agentIDsUsingSkillsDirKey(agents, dirKey)
 			slices.Sort(ids)
-			out = append(out, InstallConflict{
-				Kind:      KindSkillsDir,
-				SkillsDir: dirKey,
-				AgentIDs:  ids,
-				StepKey:   "install/skills/" + skillsStepKeySegment(dirKey),
-				Question: "Skills directory " + dirKey + " already has content (agents: " + strings.Join(ids, ", ") + "). Overwrite from .ai/skills?",
-			})
+
+			for _, entry := range srcSkillEntries {
+				if !entry.IsDir() {
+					continue
+				}
+				skillName := entry.Name()
+				srcDir := filepath.Join(srcSkillsRoot, skillName)
+				dstDir := filepath.Join(root, dirKey, skillName)
+
+				exists, differs, err := compareSkillPackages(srcDir, dstDir)
+				if err != nil || !exists || !differs {
+					continue
+				}
+
+				isManaged := lock != nil && lock.IsSkillPackageManaged(dirKey, skillName)
+				stepKey := "install/skills/" + skillsStepKeySegment(dirKey) + "/" + skillName
+
+				question := fmt.Sprintf("Skill package %q in %s already exists and differs from .ai/skills/%s. Overwrite?", skillName, dirKey, skillName)
+				if len(ids) > 1 {
+					question = fmt.Sprintf("Skill package %q in %s already exists and differs from .ai/skills/%s (agents: %s). Overwrite?", skillName, dirKey, skillName, strings.Join(ids, ", "))
+				}
+
+				out = append(out, InstallConflict{
+					Kind:      KindSkillPackage,
+					SkillsDir: dirKey,
+					SkillName: skillName,
+					AgentIDs:  ids,
+					StepKey:   stepKey,
+					Question:  question,
+					IsManaged: isManaged,
+				})
+			}
 		}
 	}
 
@@ -278,75 +312,23 @@ func skillsDirConflict(root string, skillsDir string) bool {
 	if skillsDir == "" {
 		return false
 	}
-	destDir := filepath.Join(root, skillsDir)
-	if _, err := os.Stat(destDir); err != nil {
-		return false
-	}
-
 	srcRoot := filepath.Join(root, skillsSourceDir)
-	srcEntries, err := os.ReadDir(srcRoot)
+	entries, err := os.ReadDir(srcRoot)
 	if err != nil {
 		return false
 	}
-
-	lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
-
-	hasAnyConflict := false
-	hasAnyFiles := false
-
-	for _, entry := range srcEntries {
+	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		skillName := entry.Name()
-		skillSrcDir := filepath.Join(srcRoot, skillName)
-		skillDestDir := filepath.Join(destDir, skillName)
-
-		_ = filepath.Walk(skillSrcDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			hasAnyFiles = true
-			rel, _ := filepath.Rel(skillSrcDir, path)
-			destPath := filepath.Join(skillDestDir, rel)
-			normDestRel, _ := filepath.Rel(root, destPath)
-
-			destData, err := os.ReadFile(destPath)
-			if err != nil {
-				return nil
-			}
-			srcData, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-
-			if bytes.Equal(destData, srcData) {
-				return nil
-			}
-
-			if lock != nil {
-				if stored, ok := lock.Skills[normDestRel]; ok && stored.Hash != "" {
-					if config.HashBytes(destData) == stored.Hash {
-						return nil
-					}
-				}
-			}
-
-			hasAnyConflict = true
-			return nil
-		})
-	}
-
-	if !hasAnyConflict && hasAnyFiles {
-		if lock == nil || len(lock.Skills) == 0 {
-			entries, _ := os.ReadDir(destDir)
-			if len(entries) > 0 {
-				return true
-			}
+		srcDir := filepath.Join(srcRoot, entry.Name())
+		dstDir := filepath.Join(root, skillsDir, entry.Name())
+		exists, differs, err := compareSkillPackages(srcDir, dstDir)
+		if err == nil && exists && differs {
+			return true
 		}
 	}
-
-	return hasAnyConflict
+	return false
 }
 
 func mcpConflict(root string, a Agent) bool {

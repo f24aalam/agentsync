@@ -8,6 +8,7 @@ type InstallPlan struct {
 	SkipGuidelinesDest map[string]bool  // destination path (e.g. "AGENTS.md") -> skip writing
 	SkipMCP            map[string]bool  // agent ID -> skip MCP merge/write
 	SkipSkillsDir      map[string]bool  // skills output dir (as in Agent.SkillsDir) -> skip copy from .ai/skills
+	SkipSkillPackages  map[string]bool  // package key (e.g. ".claude/skills/code-review") -> skip package
 	Lock               *config.LockFile // ownership lock metadata
 }
 
@@ -18,6 +19,7 @@ func NewInstallPlan() InstallPlan {
 		SkipGuidelinesDest: make(map[string]bool),
 		SkipMCP:            make(map[string]bool),
 		SkipSkillsDir:      make(map[string]bool),
+		SkipSkillPackages:  make(map[string]bool),
 		Lock:               config.NewLockFile(),
 	}
 }

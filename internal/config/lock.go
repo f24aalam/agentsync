@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -33,6 +34,37 @@ func NewLockFile() *LockFile {
 		Skills:     make(map[string]ResourceLock),
 		MCP:        make(map[string]map[string]ResourceLock),
 	}
+}
+
+// IsSkillPackageManaged reports whether a skill package in destSkillsDir is recorded as managed.
+func (l *LockFile) IsSkillPackageManaged(destSkillsDir, skillName string) bool {
+	if l == nil || l.Skills == nil {
+		return false
+	}
+	normPkg := filepath.Clean(filepath.Join(destSkillsDir, skillName))
+	if _, ok := l.Skills[normPkg]; ok {
+		return true
+	}
+	prefix := normPkg + string(filepath.Separator)
+	for k := range l.Skills {
+		cleanK := filepath.Clean(k)
+		if strings.HasPrefix(cleanK, prefix) || cleanK == normPkg {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordSkillPackage records a skill package as managed.
+func (l *LockFile) RecordSkillPackage(destSkillsDir, skillName string) {
+	if l == nil {
+		return
+	}
+	if l.Skills == nil {
+		l.Skills = make(map[string]ResourceLock)
+	}
+	normPkg := filepath.Clean(filepath.Join(destSkillsDir, skillName))
+	l.Skills[normPkg] = ResourceLock{}
 }
 
 // HashBytes computes the SHA-256 hex string of data.

@@ -38,15 +38,27 @@ func TestDetectInstallConflictsSkillsDir(t *testing.T) {
 	mustWriteConflict(t, dir, ".ai/skills/s/SKILL.md", "s")
 	mustWriteConflict(t, dir, ".agents/skills/keep/readme.md", "x")
 	codex, _ := ByID("codex")
+
+	// Sibling skill 'keep' does NOT trigger conflict for 's' (Rule 1 & 6)
 	conflicts, err := DetectInstallConflicts([]Agent{codex}, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conflicts) != 1 || conflicts[0].Kind != KindSkillsDir {
-		t.Fatalf("unexpected conflicts: %+v", conflicts)
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no conflicts when destination skill 's' does not exist, got %+v", conflicts)
 	}
-	if !strings.Contains(conflicts[0].StepKey, "install/skills/") {
-		t.Fatalf("expected skills step key, got %q", conflicts[0].StepKey)
+
+	// When skill 's' exists in destination with different content, package conflict is detected (Rule 3)
+	mustWriteConflict(t, dir, ".agents/skills/s/SKILL.md", "different content")
+	conflicts2, err := DetectInstallConflicts([]Agent{codex}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts2) != 1 || conflicts2[0].Kind != KindSkillPackage || conflicts2[0].SkillName != "s" {
+		t.Fatalf("unexpected conflicts: %+v", conflicts2)
+	}
+	if !strings.Contains(conflicts2[0].StepKey, "install/skills/.agents_skills/s") {
+		t.Fatalf("expected skills step key, got %q", conflicts2[0].StepKey)
 	}
 }
 

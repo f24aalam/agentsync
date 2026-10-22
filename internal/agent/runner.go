@@ -104,7 +104,7 @@ func computeSkillStepsByDir(agents []Agent, plan InstallPlan, root string, would
 				continue
 			}
 		}
-		if err := syncSkillTrees(root, dir, plan.Lock); err != nil {
+		if err := syncSkillTreesWithPlan(root, dir, plan); err != nil {
 			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusError, Err: err}
 			continue
 		}

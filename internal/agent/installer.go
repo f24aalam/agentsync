@@ -278,15 +278,131 @@ func copySkillTreesFromAI(root, destSkillsDir string) error {
 	return syncSkillTrees(root, destSkillsDir, nil)
 }
 
+// compareSkillPackages compares the contents of a canonical skill package (srcDir)
+// and an existing destination skill package (dstDir).
+// It returns (exists bool, differs bool, err error).
+// If dstDir does not exist, exists=false, differs=false.
+// If dstDir exists, differs=true if any file is missing, extra, or has different contents/symlinks.
+func compareSkillPackages(srcDir, dstDir string) (bool, bool, error) {
+	st, err := os.Lstat(dstDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	if !st.IsDir() {
+		return true, true, nil
+	}
+
+	srcFiles := make(map[string]os.FileInfo)
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		srcFiles[rel] = info
+		return nil
+	})
+	if err != nil {
+		return true, false, err
+	}
+
+	dstFiles := make(map[string]os.FileInfo)
+	err = filepath.Walk(dstDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dstDir, path)
+		if err != nil {
+			return err
+		}
+		dstFiles[rel] = info
+		return nil
+	})
+	if err != nil {
+		return true, false, err
+	}
+
+	if len(srcFiles) != len(dstFiles) {
+		return true, true, nil
+	}
+
+	for rel, srcInfo := range srcFiles {
+		dstInfo, ok := dstFiles[rel]
+		if !ok {
+			return true, true, nil
+		}
+
+		srcPath := filepath.Join(srcDir, rel)
+		dstPath := filepath.Join(dstDir, rel)
+
+		srcIsSymlink := srcInfo.Mode()&os.ModeSymlink != 0
+		dstIsSymlink := dstInfo.Mode()&os.ModeSymlink != 0
+
+		if srcIsSymlink != dstIsSymlink {
+			return true, true, nil
+		}
+
+		if srcIsSymlink {
+			srcTarget, err := os.Readlink(srcPath)
+			if err != nil {
+				return true, true, nil
+			}
+			dstTarget, err := os.Readlink(dstPath)
+			if err != nil {
+				return true, true, nil
+			}
+			if srcTarget != dstTarget {
+				return true, true, nil
+			}
+			continue
+		}
+
+		if srcInfo.Size() != dstInfo.Size() {
+			return true, true, nil
+		}
+
+		srcData, err := os.ReadFile(srcPath)
+		if err != nil {
+			return true, false, err
+		}
+		dstData, err := os.ReadFile(dstPath)
+		if err != nil {
+			return true, false, err
+		}
+
+		if !bytes.Equal(srcData, dstData) {
+			return true, true, nil
+		}
+	}
+
+	return true, false, nil
+}
+
 func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
+	plan := NewInstallPlan()
+	plan.Lock = lock
+	return syncSkillTreesWithPlan(root, destSkillsDir, plan)
+}
+
+func syncSkillTreesWithPlan(root, destSkillsDir string, plan InstallPlan) error {
 	srcRoot := filepath.Join(root, skillsSourceDir)
 	entries, err := os.ReadDir(srcRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			entries = nil
-		} else {
-			return err
+			return nil
 		}
+		return err
 	}
 
 	destRoot := filepath.Join(root, destSkillsDir)
@@ -294,75 +410,96 @@ func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 		return err
 	}
 
+	dirKey := SkillDirKey(destSkillsDir)
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		skillName := entry.Name()
+		pkgKey := dirKey + "/" + skillName
+
+		// If skipped in plan (user declined, or --yes on unknown package), leave complete package untouched!
+		if plan.SkipSkillsDir[dirKey] || (plan.SkipSkillPackages != nil && plan.SkipSkillPackages[pkgKey]) {
+			continue
+		}
+
 		srcDir := filepath.Join(srcRoot, skillName)
 		dstDir := filepath.Join(destRoot, skillName)
 
-		err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
+		exists, differs, err := compareSkillPackages(srcDir, dstDir)
+		if err != nil {
+			return err
+		}
+		if exists && !differs {
+			// Complete package matches canonical package! Skip writing to preserve mtime
+			if plan.Lock != nil {
+				plan.Lock.RecordSkillPackage(dirKey, skillName)
 			}
-			rel, err := filepath.Rel(srcDir, path)
-			if err != nil {
-				return err
-			}
-			targetPath := filepath.Join(dstDir, rel)
-			normTargetRel, _ := filepath.Rel(root, targetPath)
+			continue
+		}
 
-			if info.IsDir() {
-				return os.MkdirAll(targetPath, 0o755)
-			}
+		if err := copySkillPackage(srcDir, dstDir, plan.Lock, dirKey, skillName, root); err != nil {
+			return err
+		}
+	}
 
-			// Handle symlinks
-			if info.Mode()&os.ModeSymlink != 0 {
-				srcTarget, err := os.Readlink(path)
-				if err == nil {
-					if dstTarget, err := os.Readlink(targetPath); err == nil && dstTarget == srcTarget {
-						if lock != nil {
-							if lock.Skills == nil {
-								lock.Skills = make(map[string]config.ResourceLock)
-							}
-							lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
+	return nil
+}
+
+func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skillName, root string) error {
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+
+	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(dstDir, rel)
+		normTargetRel, _ := filepath.Rel(root, targetPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, 0o755)
+		}
+
+		// Handle symlinks
+		if info.Mode()&os.ModeSymlink != 0 {
+			srcTarget, err := os.Readlink(path)
+			if err == nil {
+				if dstTarget, err := os.Readlink(targetPath); err == nil && dstTarget == srcTarget {
+					if lock != nil {
+						if lock.Skills == nil {
+							lock.Skills = make(map[string]config.ResourceLock)
 						}
-						return nil
+						lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
 					}
+					return nil
 				}
-				if err := copyFile(path, targetPath); err != nil {
-					return err
-				}
-				if lock != nil {
-					if lock.Skills == nil {
-						lock.Skills = make(map[string]config.ResourceLock)
-					}
-					lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
-				}
-				return nil
 			}
-
-			srcData, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-
-			// If target file already exists and is identical, skip writing to preserve mtime
-			if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
-				if lock != nil {
-					if lock.Skills == nil {
-						lock.Skills = make(map[string]config.ResourceLock)
-					}
-					lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
-				}
-				return nil
-			}
-
 			if err := copyFile(path, targetPath); err != nil {
 				return err
 			}
+			if lock != nil {
+				if lock.Skills == nil {
+					lock.Skills = make(map[string]config.ResourceLock)
+				}
+				lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
+			}
+			return nil
+		}
 
+		srcData, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		// If target file already exists and is identical, skip writing to preserve mtime
+		if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
 			if lock != nil {
 				if lock.Skills == nil {
 					lock.Skills = make(map[string]config.ResourceLock)
@@ -370,28 +507,43 @@ func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 				lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
 			}
 			return nil
-		})
-		if err != nil {
+		}
+
+		if err := copyFile(path, targetPath); err != nil {
 			return err
 		}
 
-		// Ensure managed package reflects canonical source by removing stale files inside this package only
-		_ = filepath.Walk(dstDir, func(p string, fi os.FileInfo, err error) error {
-			if err != nil || fi.IsDir() {
-				return nil
+		if lock != nil {
+			if lock.Skills == nil {
+				lock.Skills = make(map[string]config.ResourceLock)
 			}
-			rel, err := filepath.Rel(dstDir, p)
-			if err != nil {
-				return nil
-			}
-			srcEquiv := filepath.Join(srcDir, rel)
-			if _, err := os.Lstat(srcEquiv); os.IsNotExist(err) {
-				_ = os.Remove(p)
-			}
-			return nil
-		})
+			lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
+	// Remove stale files inside this package so it matches canonical source exactly (approved package replacement)
+	_ = filepath.Walk(dstDir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dstDir, p)
+		if err != nil {
+			return nil
+		}
+		srcEquiv := filepath.Join(srcDir, rel)
+		if _, err := os.Lstat(srcEquiv); os.IsNotExist(err) {
+			_ = os.Remove(p)
+		}
+		return nil
+	})
+
+	if lock != nil {
+		lock.RecordSkillPackage(dirKey, skillName)
+	}
 	return nil
 }
 

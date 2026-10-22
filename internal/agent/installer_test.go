@@ -545,6 +545,82 @@ func TestSkills_PackageSyncAndNoOrphanPruning(t *testing.T) {
 	}
 }
 
+func TestSkills_PackageConflictDecisions_ApproveVsDeclineAndYes(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// Canonical skill: testing
+	mustWriteFile(t, ".ai/skills/testing/SKILL.md", "Canonical testing skill v1")
+	mustWriteFile(t, ".ai/skills/testing/scripts/test.sh", "canonical test")
+
+	destDir := ".claude/skills"
+	pkgPath := filepath.Join(destDir, "testing")
+	pkgKey := SkillDirKey(destDir) + "/testing"
+
+	// 1. Pre-existing destination skill with extra developer file
+	mustWriteFile(t, filepath.Join(pkgPath, "SKILL.md"), "Pre-existing different skill")
+	mustWriteFile(t, filepath.Join(pkgPath, "personal-notes.md"), "Do not lose my notes")
+
+	// Pre-existing package is UNKNOWN (not in lock)
+	lock := config.NewLockFile()
+	if lock.IsSkillPackageManaged(destDir, "testing") {
+		t.Fatalf("expected package to be unmanaged initially")
+	}
+
+	// Case A: User declines overwrite (plan.SkipSkillPackages[pkgKey] = true)
+	planDecline := NewInstallPlan()
+	planDecline.Lock = lock
+	planDecline.SkipSkillPackages[pkgKey] = true
+
+	if err := syncSkillTreesWithPlan(".", destDir, planDecline); err != nil {
+		t.Fatalf("sync with decline failed: %v", err)
+	}
+
+	// Verify complete package is UNCHANGED (Rule 5 & 7)
+	assertFileContains(t, filepath.Join(pkgPath, "SKILL.md"), "Pre-existing different skill")
+	assertFileContains(t, filepath.Join(pkgPath, "personal-notes.md"), "Do not lose my notes")
+	if _, err := os.Stat(filepath.Join(pkgPath, "scripts/test.sh")); !os.IsNotExist(err) {
+		t.Fatalf("scripts/test.sh should not have been copied after user declined")
+	}
+
+	// Case B: User approves overwrite
+	planApprove := NewInstallPlan()
+	planApprove.Lock = lock
+
+	if err := syncSkillTreesWithPlan(".", destDir, planApprove); err != nil {
+		t.Fatalf("sync with approval failed: %v", err)
+	}
+
+	// Verify package matches canonical exactly (Rule 4: extra files removed after approval)
+	assertFileContains(t, filepath.Join(pkgPath, "SKILL.md"), "Canonical testing skill v1")
+	assertFileContains(t, filepath.Join(pkgPath, "scripts/test.sh"), "canonical test")
+	if _, err := os.Stat(filepath.Join(pkgPath, "personal-notes.md")); !os.IsNotExist(err) {
+		t.Fatalf("personal-notes.md should have been cleaned up after explicit package approval")
+	}
+	if !lock.IsSkillPackageManaged(destDir, "testing") {
+		t.Fatalf("expected package to be recorded as managed after approval")
+	}
+
+	// Case C: Canonical update to v2, destination modified -> with managed lock, --yes approves update (Rule 8)
+	mustWriteFile(t, ".ai/skills/testing/SKILL.md", "Canonical testing skill v2")
+	mustWriteFile(t, filepath.Join(pkgPath, "SKILL.md"), "User modified v1.5")
+	mustWriteFile(t, filepath.Join(pkgPath, "notes2.md"), "Temporary file")
+
+	planYes := NewInstallPlan()
+	planYes.Lock = lock
+
+	if err := syncSkillTreesWithPlan(".", destDir, planYes); err != nil {
+		t.Fatalf("sync with yes failed: %v", err)
+	}
+
+	assertFileContains(t, filepath.Join(pkgPath, "SKILL.md"), "Canonical testing skill v2")
+	if _, err := os.Stat(filepath.Join(pkgPath, "notes2.md")); !os.IsNotExist(err) {
+		t.Fatalf("notes2.md should have been cleaned up in approved package update")
+	}
+}
+
 func TestMCP_SyncAndSafePruning_JSONAndTOML(t *testing.T) {
 	wd := mustGetwd(t)
 	tempDir := t.TempDir()
