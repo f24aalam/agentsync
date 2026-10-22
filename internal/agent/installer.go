@@ -408,7 +408,6 @@ func installMCPWithLock(target Agent, root string, skip bool, lock *config.LockF
 	_, err := os.Stat(mcpPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			pruneDeletedMCPServers(root, target, nil, lock)
 			return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusSkipped}
 		}
 
@@ -460,36 +459,6 @@ func installMCPWithLock(target Agent, root string, skip bool, lock *config.LockF
 	return StepResult{Name: "MCP", Target: target.MCPConfig, Status: StepStatusOK}
 }
 
-func pruneDeletedMCPServers(root string, target Agent, remainingServers map[string]config.MCPServer, lock *config.LockFile) {
-	if lock == nil || lock.MCP == nil {
-		return
-	}
-	destPaths, err := resolveMCPDestPaths(target)
-	if err != nil {
-		return
-	}
-	for _, dest := range destPaths {
-		if strings.TrimSpace(dest) == "" {
-			continue
-		}
-		destWrite := dest
-		if !filepath.IsAbs(destWrite) {
-			destWrite = filepath.Join(root, destWrite)
-		}
-		normKey, _ := filepath.Rel(root, destWrite)
-		trackedServers, ok := lock.MCP[normKey]
-		if !ok || len(trackedServers) == 0 {
-			continue
-		}
-
-		if target.MCPFormat == MCPFormatTOML {
-			_ = mergeOrWriteTomlMCP(destWrite, target, config.MCPConfig{Servers: remainingServers}, lock, normKey)
-		} else {
-			_ = mergeOrWriteJSONMCP(destWrite, target, config.MCPConfig{Servers: remainingServers}, lock, normKey)
-		}
-	}
-}
-
 func resolveMCPDestPaths(target Agent) ([]string, error) {
 	paths := make([]string, 0, 1+len(target.MCPConfigs))
 	if strings.TrimSpace(target.MCPConfig) != "" {
@@ -519,7 +488,10 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 	// Build managed server entries in the per-agent schema shape.
 	managed := make(map[string]any, len(cfg.Servers))
 	for name, server := range cfg.Servers {
-		managed[name] = renderManagedServerJSON(target, name, server)
+		rendered := renderManagedServerJSON(target, name, server)
+		if rendered != nil {
+			managed[name] = rendered
+		}
 	}
 
 	rootKey, renderRoot := mcpJSONRoot(target)
@@ -535,24 +507,6 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 		existingServers, ok := root[rootKey].(map[string]any)
 		if !ok || existingServers == nil {
 			existingServers = map[string]any{}
-		}
-
-		// Prune deleted servers previously managed by AgentSync
-		if lock != nil && lock.MCP != nil && lock.MCP[normKey] != nil {
-			trackedServers := lock.MCP[normKey]
-			for trackedName, resLock := range trackedServers {
-				if _, inConfig := cfg.Servers[trackedName]; !inConfig {
-					if currVal, exists := existingServers[trackedName]; exists {
-						currBytes, _ := json.Marshal(currVal)
-						if config.HashBytes(currBytes) == resLock.Hash {
-							delete(existingServers, trackedName)
-							delete(trackedServers, trackedName)
-						}
-					} else {
-						delete(trackedServers, trackedName)
-					}
-				}
-			}
 		}
 
 		// Update or insert managed servers
@@ -658,6 +612,9 @@ func renderManagedServerJSON(target Agent, _ string, server config.MCPServer) an
 		return out
 
 	case "github-copilot":
+		if strings.TrimSpace(server.Command) == "" {
+			return nil
+		}
 		out := map[string]any{
 			"type":    "stdio",
 			"command": server.Command,
@@ -671,6 +628,9 @@ func renderManagedServerJSON(target Agent, _ string, server config.MCPServer) an
 		return out
 
 	default:
+		if strings.TrimSpace(server.Command) == "" {
+			return nil
+		}
 		out := map[string]any{
 			"command": server.Command,
 		}
@@ -826,7 +786,6 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 	// 4. Identify which sections are managed by AgentSync
 	firstManagedIdx := -1
 	managedIndices := make(map[int]bool)
-	var obsoleteToDelete []string
 
 	for idx, sec := range sections {
 		srvName := mcpServerNameForTable(sec.header)
@@ -834,14 +793,6 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 		if srvName != "" {
 			if _, inConfig := servers[srvName]; inConfig {
 				isManaged = true
-			} else if lock != nil && lock.MCP != nil && lock.MCP[normKey] != nil {
-				if resLock, tracked := lock.MCP[normKey][srvName]; tracked {
-					tableText := extractTableBody(sec.lines)
-					if config.HashString(tableText) == resLock.Hash || config.HashString(tableText+"\n") == resLock.Hash {
-						isManaged = true
-						obsoleteToDelete = append(obsoleteToDelete, srvName)
-					}
-				}
 			}
 		} else if isRootMCPHeader(sec.header) {
 			isManaged = true
@@ -852,12 +803,6 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 			if firstManagedIdx == -1 {
 				firstManagedIdx = idx
 			}
-		}
-	}
-
-	if lock != nil && lock.MCP != nil && lock.MCP[normKey] != nil {
-		for _, srv := range obsoleteToDelete {
-			delete(lock.MCP[normKey], srv)
 		}
 	}
 
@@ -1071,8 +1016,14 @@ func renderTomlMCPServers(servers map[string]config.MCPServer) string {
 		return ""
 	}
 	names := make([]string, 0, len(servers))
-	for name := range servers {
+	for name, srv := range servers {
+		if strings.TrimSpace(srv.Command) == "" {
+			continue
+		}
 		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	slices.Sort(names)
 
@@ -1110,6 +1061,9 @@ func renderTomlMCPServers(servers map[string]config.MCPServer) string {
 }
 
 func renderSingleTomlMCPServer(name string, server config.MCPServer) string {
+	if strings.TrimSpace(server.Command) == "" {
+		return ""
+	}
 	var buf strings.Builder
 	buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", name))
 	buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))

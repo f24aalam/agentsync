@@ -599,11 +599,8 @@ args = ["--port", "5432"]
 	assertFileContains(t, ".mcp.json", `"postgres"`)
 	// unmanaged user tool must remain
 	assertFileContains(t, ".mcp.json", `"my_user_tool"`)
-	// deleted redis should be pruned
-	claudeContent := readFile(t, ".mcp.json")
-	if strings.Contains(claudeContent, `"redis"`) {
-		t.Errorf("expected deleted managed server 'redis' to be pruned from .mcp.json!\nGot:\n%s", claudeContent)
-	}
+	// in v1, deleted redis is not pruned (no automatic orphan cleanup)
+	assertFileContains(t, ".mcp.json", `"redis"`)
 
 	// 2. TOML test (.codex/config.toml for Codex)
 	codex, _ := ByID("codex")
@@ -660,8 +657,9 @@ command = "pg-cmd"
 	if !strings.Contains(codexContent, "[mcp_servers.postgres]") {
 		t.Errorf("postgres lost from .codex/config.toml")
 	}
-	if strings.Contains(codexContent, "[mcp_servers.search]") {
-		t.Errorf("expected deleted managed server 'search' to be pruned from .codex/config.toml!\nGot:\n%s", codexContent)
+	// in v1, deleted search is not pruned (no automatic orphan cleanup)
+	if !strings.Contains(codexContent, "[mcp_servers.search]") {
+		t.Errorf("expected deleted managed server 'search' to remain in .codex/config.toml in v1!\nGot:\n%s", codexContent)
 	}
 }
 

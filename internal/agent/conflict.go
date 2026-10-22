@@ -406,7 +406,10 @@ func mcpConflict(root string, a Agent) bool {
 
 		managed := make(map[string]any, len(cfg.Servers))
 		for name, server := range cfg.Servers {
-			managed[name] = renderManagedServerJSON(a, name, server)
+			rendered := renderManagedServerJSON(a, name, server)
+			if rendered != nil {
+				managed[name] = rendered
+			}
 		}
 
 		allMatch := true
@@ -425,20 +428,7 @@ func mcpConflict(root string, a Agent) bool {
 		}
 
 		if allMatch {
-			hasObsolete := false
-			if lock != nil && lock.MCP != nil && lock.MCP[normKey] != nil {
-				for trackedName := range lock.MCP[normKey] {
-					if _, inConfig := cfg.Servers[trackedName]; !inConfig {
-						if _, exists := existingServers[trackedName]; exists {
-							hasObsolete = true
-							break
-						}
-					}
-				}
-			}
-			if !hasObsolete {
-				continue
-			}
+			continue
 		}
 
 		if lock == nil || lock.MCP == nil || len(lock.MCP[normKey]) == 0 {

@@ -304,8 +304,7 @@ func detectMCP(root string, target agent.Agent) ([]DetectedMCPServer, error) {
 		}
 
 		for name, server := range servers {
-			// We only support local/stdio servers in the canonical MCP model for now.
-			if strings.TrimSpace(server.Command) == "" {
+			if strings.TrimSpace(server.Command) == "" && strings.TrimSpace(server.Type) != "remote" {
 				continue
 			}
 
