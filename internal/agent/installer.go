@@ -467,49 +467,23 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 			return os.MkdirAll(targetPath, 0o755)
 		}
 
-		// Handle symlinks
-		if info.Mode()&os.ModeSymlink != 0 {
-			srcTarget, err := os.Readlink(path)
+		// If target file already exists and is identical, skip writing to preserve mtime
+		if info.Mode()&os.ModeSymlink == 0 {
+			srcData, err := os.ReadFile(path)
 			if err == nil {
-				if dstTarget, err := os.Readlink(targetPath); err == nil && dstTarget == srcTarget {
+				if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
 					if lock != nil {
 						if lock.Skills == nil {
 							lock.Skills = make(map[string]config.ResourceLock)
 						}
-						lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
+						lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
 					}
 					return nil
 				}
 			}
-			if err := copyFile(path, targetPath); err != nil {
-				return err
-			}
-			if lock != nil {
-				if lock.Skills == nil {
-					lock.Skills = make(map[string]config.ResourceLock)
-				}
-				lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
-			}
-			return nil
 		}
 
-		srcData, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		// If target file already exists and is identical, skip writing to preserve mtime
-		if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
-			if lock != nil {
-				if lock.Skills == nil {
-					lock.Skills = make(map[string]config.ResourceLock)
-				}
-				lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
-			}
-			return nil
-		}
-
-		if err := copyFile(path, targetPath); err != nil {
+		if err := CopyFileWithinPackage(path, targetPath, srcDir); err != nil {
 			return err
 		}
 
@@ -517,7 +491,7 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 			if lock.Skills == nil {
 				lock.Skills = make(map[string]config.ResourceLock)
 			}
-			lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
+			lock.Skills[normTargetRel] = config.ResourceLock{}
 		}
 		return nil
 	})
@@ -1289,6 +1263,11 @@ func writeFileWithParents(path string, data []byte) error {
 }
 
 func copyDir(src, dst string) error {
+	return CopyPackageDir(src, dst, src)
+}
+
+// CopyPackageDir copies a directory tree from src to dst, validating that any symlinks stay within pkgRoot.
+func CopyPackageDir(src, dst, pkgRoot string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return err
@@ -1303,14 +1282,13 @@ func copyDir(src, dst string) error {
 		dstPath := filepath.Join(dst, entry.Name())
 
 		if entry.IsDir() {
-			if err := copyDir(srcPath, dstPath); err != nil {
+			if err := CopyPackageDir(srcPath, dstPath, pkgRoot); err != nil {
 				return err
 			}
-
 			continue
 		}
 
-		if err := copyFile(srcPath, dstPath); err != nil {
+		if err := CopyFileWithinPackage(srcPath, dstPath, pkgRoot); err != nil {
 			return err
 		}
 	}
@@ -1319,6 +1297,12 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	return CopyFileWithinPackage(src, dst, filepath.Dir(src))
+}
+
+// CopyFileWithinPackage copies src to dst. If src is a symlink, it validates that the symlink
+// is relative and stays strictly within pkgRoot. If unsafe or difficult to guarantee, it returns an error.
+func CopyFileWithinPackage(src, dst, pkgRoot string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
@@ -1329,30 +1313,7 @@ func copyFile(src, dst string) error {
 	}
 
 	if info.Mode()&os.ModeSymlink != 0 {
-		linkTarget, err := os.Readlink(src)
-		if err != nil {
-			return err
-		}
-
-		if filepath.IsAbs(linkTarget) {
-			srcDirAbs, err := filepath.Abs(filepath.Dir(src))
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(srcDirAbs, linkTarget)
-			if err != nil || strings.HasPrefix(filepath.Clean(rel), "..") {
-				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
-			}
-			linkTarget = rel
-		} else {
-			cleanTarget := filepath.Clean(linkTarget)
-			if strings.HasPrefix(cleanTarget, "..") {
-				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
-			}
-		}
-
-		_ = os.Remove(dst)
-		return os.Symlink(linkTarget, dst)
+		return copySymlinkWithinPackage(src, dst, pkgRoot)
 	}
 
 	in, err := os.Open(src)
@@ -1376,4 +1337,68 @@ func copyFile(src, dst string) error {
 	}
 
 	return out.Close()
+}
+
+func copySymlinkWithinPackage(src, dst, pkgRoot string) error {
+	linkTarget, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+
+	cleanPkgRoot := filepath.Clean(pkgRoot)
+	srcDir := filepath.Dir(src)
+
+	// 1. If symlink target is absolute, verify whether it points inside the package.
+	// If it points outside, reject it. If it points inside, normalize to relative.
+	if filepath.IsAbs(linkTarget) {
+		pkgRootAbs, err := filepath.Abs(cleanPkgRoot)
+		if err != nil {
+			return err
+		}
+		relToPkg, err := filepath.Rel(pkgRootAbs, linkTarget)
+		if err != nil || strings.HasPrefix(relToPkg, "..") || relToPkg == ".." || filepath.IsAbs(relToPkg) {
+			return fmt.Errorf("unsafe symlink %s: absolute target %s escapes skill package %s", src, linkTarget, cleanPkgRoot)
+		}
+		srcDirAbs, err := filepath.Abs(srcDir)
+		if err != nil {
+			return err
+		}
+		relToSrcDir, err := filepath.Rel(srcDirAbs, linkTarget)
+		if err != nil {
+			return fmt.Errorf("unsafe symlink %s: %w", src, err)
+		}
+		linkTarget = relToSrcDir
+	}
+
+	// 2. Reject symlinks that lexically escape the package
+	targetPath := filepath.Clean(filepath.Join(srcDir, linkTarget))
+
+	relToPkg, err := filepath.Rel(cleanPkgRoot, targetPath)
+	if err != nil || strings.HasPrefix(relToPkg, "..") || relToPkg == ".." || filepath.IsAbs(relToPkg) {
+		return fmt.Errorf("unsafe symlink %s: target %s escapes skill package %s", src, linkTarget, cleanPkgRoot)
+	}
+
+	// 3. Reject broken symlinks
+	if _, err := os.Stat(targetPath); err != nil {
+		return fmt.Errorf("broken symlink %s: target %s does not exist: %w", src, targetPath, err)
+	}
+
+	// 4. Reject circular symlinks or symlinks escaping through intermediate symlinks
+	evalTarget, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid symlink %s: %w", src, err)
+	}
+
+	evalPkgRoot, err := filepath.EvalSymlinks(cleanPkgRoot)
+	if err != nil {
+		evalPkgRoot = cleanPkgRoot
+	}
+
+	relEval, err := filepath.Rel(evalPkgRoot, evalTarget)
+	if err != nil || strings.HasPrefix(relEval, "..") || relEval == ".." || filepath.IsAbs(relEval) {
+		return fmt.Errorf("unsafe symlink %s: resolved target %s escapes skill package %s", src, evalTarget, evalPkgRoot)
+	}
+
+	_ = os.Remove(dst)
+	return os.Symlink(linkTarget, dst)
 }

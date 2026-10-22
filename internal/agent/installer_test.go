@@ -810,3 +810,115 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+func TestSymlinks_ValidationAndSafetyCases(t *testing.T) {
+	tempDir := t.TempDir()
+
+	pkgRoot := filepath.Join(tempDir, "source_pkg")
+	dstRoot := filepath.Join(tempDir, "dest_pkg")
+	if err := os.MkdirAll(pkgRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Outside file that should NEVER be accessed or linked
+	outsideFile := filepath.Join(tempDir, "secret_outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("TOP SECRET DO NOT TOUCH"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Valid relative symlink within the same directory
+	if err := os.WriteFile(filepath.Join(pkgRoot, "real.txt"), []byte("real content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(pkgRoot, "valid_same_dir.txt")); err != nil {
+		t.Skipf("symlinks not supported on filesystem: %v", err)
+	}
+
+	err := CopyFileWithinPackage(filepath.Join(pkgRoot, "valid_same_dir.txt"), filepath.Join(dstRoot, "valid_same_dir.txt"), pkgRoot)
+	if err != nil {
+		t.Fatalf("expected valid internal relative symlink to succeed, got: %v", err)
+	}
+	fi, err := os.Lstat(filepath.Join(dstRoot, "valid_same_dir.txt"))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected dest to be a symlink")
+	}
+
+	// 2. Valid relative symlink using .. that still resolves within the package
+	if err := os.MkdirAll(filepath.Join(pkgRoot, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../real.txt", filepath.Join(pkgRoot, "sub/parent_rel.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "sub/parent_rel.txt"), filepath.Join(dstRoot, "sub/parent_rel.txt"), pkgRoot)
+	if err != nil {
+		t.Fatalf("expected valid parent-relative symlink within package to succeed, got: %v", err)
+	}
+
+	// 3. Reject relative symlink that escapes the package
+	if err := os.Symlink("../../secret_outside.txt", filepath.Join(pkgRoot, "sub/escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "sub/escape.txt"), filepath.Join(dstRoot, "sub/escape.txt"), pkgRoot)
+	if err == nil {
+		t.Fatalf("expected escaping relative symlink to be rejected")
+	}
+	if !strings.Contains(err.Error(), "escapes skill package") {
+		t.Errorf("expected escaping error message, got: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dstRoot, "sub/escape.txt")); !os.IsNotExist(err) {
+		t.Errorf("SECURITY VIOLATION: escaping symlink was created at destination!")
+	}
+
+	// 4. Reject absolute symlink escaping package
+	if err := os.Symlink(outsideFile, filepath.Join(pkgRoot, "absolute.txt")); err != nil {
+		t.Fatal(err)
+	}
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "absolute.txt"), filepath.Join(dstRoot, "absolute.txt"), pkgRoot)
+	if err == nil {
+		t.Fatalf("expected absolute symlink to be rejected")
+	}
+	if !strings.Contains(err.Error(), "escapes skill package") {
+		t.Errorf("expected absolute error message, got: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dstRoot, "absolute.txt")); !os.IsNotExist(err) {
+		t.Errorf("SECURITY VIOLATION: absolute symlink was created at destination!")
+	}
+
+	// 5. Reject broken symlink
+	if err := os.Symlink("nonexistent.txt", filepath.Join(pkgRoot, "broken.txt")); err != nil {
+		t.Fatal(err)
+	}
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "broken.txt"), filepath.Join(dstRoot, "broken.txt"), pkgRoot)
+	if err == nil {
+		t.Fatalf("expected broken symlink to be rejected")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected broken symlink error, got: %v", err)
+	}
+
+	// 6. Reject circular symlink
+	if err := os.Symlink("circ_b.txt", filepath.Join(pkgRoot, "circ_a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("circ_a.txt", filepath.Join(pkgRoot, "circ_b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "circ_a.txt"), filepath.Join(dstRoot, "circ_a.txt"), pkgRoot)
+	if err == nil {
+		t.Fatalf("expected circular symlink to be rejected")
+	}
+
+	// 7. Reject symlink pointing through intermediate symlink escaping package
+	if err := os.Symlink("../secret_outside.txt", filepath.Join(pkgRoot, "hop.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("hop.txt", filepath.Join(pkgRoot, "indirect.txt")); err != nil {
+		t.Fatal(err)
+	}
+	err = CopyFileWithinPackage(filepath.Join(pkgRoot, "indirect.txt"), filepath.Join(dstRoot, "indirect.txt"), pkgRoot)
+	if err == nil {
+		t.Fatalf("expected indirect escaping symlink to be rejected")
+	}
+}

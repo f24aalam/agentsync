@@ -3,7 +3,6 @@ package scaffold
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -145,7 +144,7 @@ func ImportGuidelineToCore(sourceLabel string, content string) (string, error) {
 
 func ImportSkill(name string, sourceDir string) (string, error) {
 	targetDir := filepath.Join(skillsDir, name)
-	if err := copyDir(sourceDir, targetDir); err != nil {
+	if err := agent.CopyPackageDir(sourceDir, targetDir, sourceDir); err != nil {
 		return "", err
 	}
 	return targetDir + string(os.PathSeparator), nil
@@ -278,95 +277,6 @@ func UpdateGitignore(path string, agents []agent.Agent) (bool, error) {
 	}
 
 	return true, nil
-}
-
-func copyDir(src, dst string) error {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			if err := copyDir(srcPath, dstPath); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if err := copyFile(srcPath, dstPath); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func copyFile(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		linkTarget, err := os.Readlink(src)
-		if err != nil {
-			return err
-		}
-
-		if filepath.IsAbs(linkTarget) {
-			srcDirAbs, err := filepath.Abs(filepath.Dir(src))
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(srcDirAbs, linkTarget)
-			if err != nil || strings.HasPrefix(filepath.Clean(rel), "..") {
-				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
-			}
-			linkTarget = rel
-		} else {
-			cleanTarget := filepath.Clean(linkTarget)
-			if strings.HasPrefix(cleanTarget, "..") {
-				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
-			}
-		}
-
-		_ = os.Remove(dst)
-		return os.Symlink(linkTarget, dst)
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-
-	if err := out.Chmod(info.Mode()); err != nil {
-		return err
-	}
-
-	return out.Close()
 }
 
 func ignoreEntries(agents []agent.Agent) []string {
