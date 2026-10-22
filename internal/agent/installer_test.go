@@ -708,6 +708,69 @@ command = "pg-cmd"
 	}
 }
 
+func TestUpdateTomlMCPServers_MultilineStringsContainingFakeTableHeaders(t *testing.T) {
+	initialTOML := `# System prompt configuration
+model = "gpt-4o"
+
+prompt = """
+Example configuration below:
+[mcp_servers.fake]
+command = "echo fake"
+args = ["test"]
+"""
+
+literal_prompt = '''
+Another literal example:
+[mcp_servers.fake_literal]
+command = "echo literal"
+'''
+
+[mcp_servers.existing]
+command = "real-tool"
+`
+	servers := map[string]config.MCPServer{
+		"new_tool": {Command: "new-cmd"},
+	}
+
+	updated, err := updateTomlMCPServers(initialTOML, servers)
+	if err != nil {
+		t.Fatalf("updateTomlMCPServers failed: %v", err)
+	}
+
+	// 1. Both multiline strings must be preserved completely intact
+	if !strings.Contains(updated, "[mcp_servers.fake]") {
+		t.Errorf("multiline basic string was corrupted! Missing [mcp_servers.fake]:\n%s", updated)
+	}
+	if !strings.Contains(updated, `command = "echo fake"`) {
+		t.Errorf("multiline basic string content lost:\n%s", updated)
+	}
+	if !strings.Contains(updated, "[mcp_servers.fake_literal]") {
+		t.Errorf("multiline literal string was corrupted! Missing [mcp_servers.fake_literal]:\n%s", updated)
+	}
+	if !strings.Contains(updated, `command = "echo literal"`) {
+		t.Errorf("multiline literal string content lost:\n%s", updated)
+	}
+
+	// 2. Unmanaged real server preserved
+	if !strings.Contains(updated, "[mcp_servers.existing]") {
+		t.Errorf("existing unmanaged server was lost:\n%s", updated)
+	}
+
+	// 3. New managed server added
+	if !strings.Contains(updated, "[mcp_servers.new_tool]") {
+		t.Errorf("new managed server was not added:\n%s", updated)
+	}
+
+	// 4. Repeated update is 100% byte-for-byte identical
+	repeated, err := updateTomlMCPServers(updated, servers)
+	if err != nil {
+		t.Fatalf("repeated update failed: %v", err)
+	}
+	if repeated != updated {
+		t.Errorf("drift detected across repeated runs:\nFirst:\n%s\nSecond:\n%s", updated, repeated)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

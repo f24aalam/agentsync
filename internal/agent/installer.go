@@ -791,9 +791,18 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 
 	var sections []tomlSection
 	current := tomlSection{header: ""}
+	inBasic := false
+	inLiteral := false
 
 	for _, line := range rawLines {
-		if header, isTable := parseTOMLTableHeader(line); isTable {
+		isInside := inBasic || inLiteral
+		header := ""
+		isTable := false
+		if !isInside {
+			header, isTable = parseTOMLTableHeader(line)
+		}
+
+		if isTable {
 			// Find trailing comments and blank lines in current.lines that precede this header
 			splitIdx := len(current.lines)
 			for splitIdx > 0 {
@@ -823,6 +832,8 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 		} else {
 			current.lines = append(current.lines, line)
 		}
+
+		inBasic, inLiteral = scanMultilineState(line, inBasic, inLiteral)
 	}
 	sections = append(sections, current)
 
@@ -911,6 +922,88 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 	}
 
 	return result, nil
+}
+
+func scanMultilineState(line string, inBasic, inLiteral bool) (bool, bool) {
+	i := 0
+	n := len(line)
+
+	for i < n {
+		if inBasic {
+			if i+2 < n && line[i] == '"' && line[i+1] == '"' && line[i+2] == '"' {
+				bs := 0
+				for k := i - 1; k >= 0 && line[k] == '\\'; k-- {
+					bs++
+				}
+				if bs%2 == 0 {
+					inBasic = false
+					i += 3
+					continue
+				}
+			}
+			i++
+			continue
+		}
+
+		if inLiteral {
+			if i+2 < n && line[i] == '\'' && line[i+1] == '\'' && line[i+2] == '\'' {
+				inLiteral = false
+				i += 3
+				continue
+			}
+			i++
+			continue
+		}
+
+		if line[i] == '#' {
+			break
+		}
+
+		if i+2 < n && line[i] == '"' && line[i+1] == '"' && line[i+2] == '"' {
+			inBasic = true
+			i += 3
+			continue
+		}
+		if i+2 < n && line[i] == '\'' && line[i+1] == '\'' && line[i+2] == '\'' {
+			inLiteral = true
+			i += 3
+			continue
+		}
+
+		if line[i] == '"' {
+			i++
+			for i < n {
+				if line[i] == '"' {
+					bs := 0
+					for k := i - 1; k >= 0 && line[k] == '\\'; k-- {
+						bs++
+					}
+					if bs%2 == 0 {
+						i++
+						break
+					}
+				}
+				i++
+			}
+			continue
+		}
+
+		if line[i] == '\'' {
+			i++
+			for i < n {
+				if line[i] == '\'' {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+
+		i++
+	}
+
+	return inBasic, inLiteral
 }
 
 func extractTableBody(lines []string) string {
