@@ -91,7 +91,7 @@ func computeSkillStepsByDir(agents []Agent, plan InstallPlan, root string, would
 			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
 			continue
 		}
-		if err := copySkillTreesFromAI(root, dir); err != nil {
+		if err := syncSkillTrees(root, dir, plan.Lock); err != nil {
 			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusError, Err: err}
 			continue
 		}

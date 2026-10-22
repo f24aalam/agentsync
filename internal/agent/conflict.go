@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -267,12 +268,75 @@ func skillsDirConflict(root string, skillsDir string) bool {
 	if skillsDir == "" {
 		return false
 	}
-	p := filepath.Join(root, skillsDir)
-	entries, err := os.ReadDir(p)
+	destDir := filepath.Join(root, skillsDir)
+	if _, err := os.Stat(destDir); err != nil {
+		return false
+	}
+
+	srcRoot := filepath.Join(root, skillsSourceDir)
+	srcEntries, err := os.ReadDir(srcRoot)
 	if err != nil {
 		return false
 	}
-	return len(entries) > 0
+
+	lock, _ := config.ReadFullLock(filepath.Join(root, ".ai/sync.lock"))
+
+	hasAnyConflict := false
+	hasAnyFiles := false
+
+	for _, entry := range srcEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillName := entry.Name()
+		skillSrcDir := filepath.Join(srcRoot, skillName)
+		skillDestDir := filepath.Join(destDir, skillName)
+
+		_ = filepath.Walk(skillSrcDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			hasAnyFiles = true
+			rel, _ := filepath.Rel(skillSrcDir, path)
+			destPath := filepath.Join(skillDestDir, rel)
+			normDestRel, _ := filepath.Rel(root, destPath)
+
+			destData, err := os.ReadFile(destPath)
+			if err != nil {
+				return nil
+			}
+			srcData, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+
+			if bytes.Equal(destData, srcData) {
+				return nil
+			}
+
+			if lock != nil {
+				if stored, ok := lock.Skills[normDestRel]; ok && stored.Hash != "" {
+					if config.HashBytes(destData) == stored.Hash {
+						return nil
+					}
+				}
+			}
+
+			hasAnyConflict = true
+			return nil
+		})
+	}
+
+	if !hasAnyConflict && hasAnyFiles {
+		if lock == nil || len(lock.Skills) == 0 {
+			entries, _ := os.ReadDir(destDir)
+			if len(entries) > 0 {
+				return true
+			}
+		}
+	}
+
+	return hasAnyConflict
 }
 
 func mcpConflict(root string, a Agent) bool {

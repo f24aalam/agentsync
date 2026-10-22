@@ -504,3 +504,86 @@ func TestInstallGuidelines_RefusesToPruneUserModified(t *testing.T) {
 		t.Fatalf("expected error mentioning user modification, got: %v", res2.Err)
 	}
 }
+
+func TestSkills_SyncAndSafePruning(t *testing.T) {
+	wd := mustGetwd(t)
+	tempDir := t.TempDir()
+	mustChdir(t, tempDir)
+	defer mustChdir(t, wd)
+
+	// 1. Initial skill setup with 2 files
+	mustWriteFile(t, ".ai/skills/code-review/SKILL.md", "Skill v1")
+	mustWriteFile(t, ".ai/skills/code-review/scripts/review.sh", "echo review")
+
+	lock := config.NewLockFile()
+	destDir := ".claude/skills/"
+
+	// First sync
+	if err := syncSkillTrees(".", destDir, lock); err != nil {
+		t.Fatalf("first sync failed: %v", err)
+	}
+
+	skillKey := filepath.Join(destDir, "code-review/SKILL.md")
+	scriptKey := filepath.Join(destDir, "code-review/scripts/review.sh")
+	if lock.Skills[skillKey].Hash == "" || lock.Skills[scriptKey].Hash == "" {
+		t.Fatalf("expected skill files recorded in lock: %+v", lock.Skills)
+	}
+
+	// Verify target files exist
+	assertFileContains(t, skillKey, "Skill v1")
+	assertFileContains(t, scriptKey, "echo review")
+
+	// 2. Add an unmanaged user file inside the skill directory
+	userFileKey := filepath.Join(destDir, "code-review/my-custom-notes.txt")
+	mustWriteFile(t, userFileKey, "Important custom developer note")
+
+	// 3. User modifies scriptKey directly
+	mustWriteFile(t, scriptKey, "echo user-modified-review")
+
+	// 4. In .ai/skills, delete review.sh and update SKILL.md
+	_ = os.Remove(".ai/skills/code-review/scripts/review.sh")
+	mustWriteFile(t, ".ai/skills/code-review/SKILL.md", "Skill v2")
+
+	// Second sync
+	if err := syncSkillTrees(".", destDir, lock); err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+
+	// SKILL.md should be updated
+	assertFileContains(t, skillKey, "Skill v2")
+
+	// Unmanaged user file must NOT be deleted
+	assertFileContains(t, userFileKey, "Important custom developer note")
+
+	// User-modified script must NOT be deleted even though it was removed from .ai/skills
+	assertFileContains(t, scriptKey, "echo user-modified-review")
+
+	// 5. Now test safe deletion of an UNMODIFIED obsolete file
+	mustWriteFile(t, ".ai/skills/temp-skill/SKILL.md", "Temporary skill")
+	if err := syncSkillTrees(".", destDir, lock); err != nil {
+		t.Fatalf("sync temp skill failed: %v", err)
+	}
+	tempKey := filepath.Join(destDir, "temp-skill/SKILL.md")
+	assertFileContains(t, tempKey, "Temporary skill")
+
+	// Remove from .ai/skills without modifying in target
+	_ = os.Remove(".ai/skills/temp-skill/SKILL.md")
+	_ = os.Remove(".ai/skills/temp-skill")
+
+	if err := syncSkillTrees(".", destDir, lock); err != nil {
+		t.Fatalf("sync after temp skill removed failed: %v", err)
+	}
+
+	// Unmodified temp skill must be safely pruned!
+	if _, err := os.Stat(tempKey); !os.IsNotExist(err) {
+		t.Errorf("expected unmodified obsolete skill %s to be pruned", tempKey)
+	}
+	// The parent directory temp-skill should also be cleaned up if empty
+	if _, err := os.Stat(filepath.Dir(tempKey)); !os.IsNotExist(err) {
+		t.Errorf("expected empty parent dir %s to be pruned", filepath.Dir(tempKey))
+	}
+	// The root skills dir must NEVER be deleted
+	if _, err := os.Stat(destDir); os.IsNotExist(err) {
+		t.Errorf("SAFETY VIOLATION: root skills dir %s was deleted!", destDir)
+	}
+}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,60 +276,140 @@ func injectManagedGuidelines(existingContent, managedContent string) (string, er
 
 func installSkills(target Agent, root string) StepResult {
 	destDir := filepath.Join(root, target.SkillsDir)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
+	if err := syncSkillTrees(root, target.SkillsDir, nil); err != nil {
+		return StepResult{Name: "Skills", Target: destDir, Status: StepStatusError, Err: err}
 	}
-
-	entries, err := os.ReadDir(filepath.Join(root, skillsSourceDir))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusOK}
-		}
-
-		return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		src := filepath.Join(root, skillsSourceDir, entry.Name())
-		dst := filepath.Join(destDir, entry.Name())
-
-		if err := copyDir(src, dst); err != nil {
-			return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusError, Err: err}
-		}
-	}
-
 	return StepResult{Name: "Skills", Target: target.SkillsDir, Status: StepStatusOK}
 }
 
 // copySkillTreesFromAI copies each child directory under root/.ai/skills into root/destSkillsDir.
 func copySkillTreesFromAI(root, destSkillsDir string) error {
+	return syncSkillTrees(root, destSkillsDir, nil)
+}
+
+func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 	srcRoot := filepath.Join(root, skillsSourceDir)
 	entries, err := os.ReadDir(srcRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			entries = nil
+		} else {
+			return err
 		}
-		return err
 	}
+
 	destRoot := filepath.Join(root, destSkillsDir)
 	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		return err
 	}
+
+	desiredPaths := make(map[string]bool)
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		src := filepath.Join(srcRoot, entry.Name())
-		dst := filepath.Join(destRoot, entry.Name())
-		if err := copyDir(src, dst); err != nil {
+		skillName := entry.Name()
+		srcDir := filepath.Join(srcRoot, skillName)
+		dstDir := filepath.Join(destRoot, skillName)
+
+		err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(srcDir, path)
+			if err != nil {
+				return err
+			}
+			targetPath := filepath.Join(dstDir, rel)
+			normTargetRel, _ := filepath.Rel(root, targetPath)
+
+			if info.IsDir() {
+				return os.MkdirAll(targetPath, 0o755)
+			}
+
+			desiredPaths[normTargetRel] = true
+
+			srcData, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			// If target file already exists and is identical, skip writing to preserve mtime
+			if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
+				if lock != nil {
+					if lock.Skills == nil {
+						lock.Skills = make(map[string]config.ResourceLock)
+					}
+					lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
+				}
+				return nil
+			}
+
+			if err := copyFile(path, targetPath); err != nil {
+				return err
+			}
+
+			if lock != nil {
+				if lock.Skills == nil {
+					lock.Skills = make(map[string]config.ResourceLock)
+				}
+				lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashBytes(srcData)}
+			}
+			return nil
+		})
+		if err != nil {
 			return err
 		}
 	}
+
+	// Safe pruning of obsolete files previously managed by AgentSync
+	if lock != nil && lock.Skills != nil {
+		normDestRoot, _ := filepath.Rel(root, destRoot)
+		normDestPrefix := filepath.Clean(normDestRoot) + string(filepath.Separator)
+
+		for trackedPath, resLock := range lock.Skills {
+			cleanTracked := filepath.Clean(trackedPath)
+			if !strings.HasPrefix(cleanTracked, normDestPrefix) && cleanTracked != filepath.Clean(normDestRoot) {
+				continue
+			}
+
+			if !desiredPaths[trackedPath] {
+				fullPath := filepath.Join(root, trackedPath)
+				if data, err := os.ReadFile(fullPath); err == nil {
+					// Remove only if unmodified by user
+					if config.HashBytes(data) == resLock.Hash {
+						_ = os.Remove(fullPath)
+						delete(lock.Skills, trackedPath)
+						cleanEmptyParentDirs(fullPath, destRoot)
+					}
+				} else if os.IsNotExist(err) {
+					delete(lock.Skills, trackedPath)
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+func cleanEmptyParentDirs(filePath, boundaryDir string) {
+	dir := filepath.Dir(filePath)
+	cleanBoundary := filepath.Clean(boundaryDir)
+	for {
+		cleanDir := filepath.Clean(dir)
+		if cleanDir == cleanBoundary || cleanDir == "." || cleanDir == "/" || len(cleanDir) <= len(cleanBoundary) {
+			break
+		}
+		entries, err := os.ReadDir(cleanDir)
+		if err != nil || len(entries) > 0 {
+			break
+		}
+		if err := os.Remove(cleanDir); err != nil {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 func installMCP(target Agent, root string, skip bool) StepResult {
