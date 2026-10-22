@@ -310,15 +310,47 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+
+		if filepath.IsAbs(linkTarget) {
+			srcDirAbs, err := filepath.Abs(filepath.Dir(src))
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(srcDirAbs, linkTarget)
+			if err != nil || strings.HasPrefix(filepath.Clean(rel), "..") {
+				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
+			}
+			linkTarget = rel
+		} else {
+			cleanTarget := filepath.Clean(linkTarget)
+			if strings.HasPrefix(cleanTarget, "..") {
+				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
+			}
+		}
+
+		_ = os.Remove(dst)
+		return os.Symlink(linkTarget, dst)
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
 
 	out, err := os.Create(dst)
 	if err != nil {
@@ -330,10 +362,6 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
 	if err := out.Chmod(info.Mode()); err != nil {
 		return err
 	}

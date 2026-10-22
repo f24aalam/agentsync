@@ -294,8 +294,6 @@ func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 		return err
 	}
 
-	desiredPaths := make(map[string]bool)
-
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -319,7 +317,31 @@ func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 				return os.MkdirAll(targetPath, 0o755)
 			}
 
-			desiredPaths[normTargetRel] = true
+			// Handle symlinks
+			if info.Mode()&os.ModeSymlink != 0 {
+				srcTarget, err := os.Readlink(path)
+				if err == nil {
+					if dstTarget, err := os.Readlink(targetPath); err == nil && dstTarget == srcTarget {
+						if lock != nil {
+							if lock.Skills == nil {
+								lock.Skills = make(map[string]config.ResourceLock)
+							}
+							lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
+						}
+						return nil
+					}
+				}
+				if err := copyFile(path, targetPath); err != nil {
+					return err
+				}
+				if lock != nil {
+					if lock.Skills == nil {
+						lock.Skills = make(map[string]config.ResourceLock)
+					}
+					lock.Skills[normTargetRel] = config.ResourceLock{Hash: config.HashString(srcTarget)}
+				}
+				return nil
+			}
 
 			srcData, err := os.ReadFile(path)
 			if err != nil {
@@ -352,55 +374,25 @@ func syncSkillTrees(root, destSkillsDir string, lock *config.LockFile) error {
 		if err != nil {
 			return err
 		}
-	}
 
-	// Safe pruning of obsolete files previously managed by AgentSync
-	if lock != nil && lock.Skills != nil {
-		normDestRoot, _ := filepath.Rel(root, destRoot)
-		normDestPrefix := filepath.Clean(normDestRoot) + string(filepath.Separator)
-
-		for trackedPath, resLock := range lock.Skills {
-			cleanTracked := filepath.Clean(trackedPath)
-			if !strings.HasPrefix(cleanTracked, normDestPrefix) && cleanTracked != filepath.Clean(normDestRoot) {
-				continue
+		// Ensure managed package reflects canonical source by removing stale files inside this package only
+		_ = filepath.Walk(dstDir, func(p string, fi os.FileInfo, err error) error {
+			if err != nil || fi.IsDir() {
+				return nil
 			}
-
-			if !desiredPaths[trackedPath] {
-				fullPath := filepath.Join(root, trackedPath)
-				if data, err := os.ReadFile(fullPath); err == nil {
-					// Remove only if unmodified by user
-					if config.HashBytes(data) == resLock.Hash {
-						_ = os.Remove(fullPath)
-						delete(lock.Skills, trackedPath)
-						cleanEmptyParentDirs(fullPath, destRoot)
-					}
-				} else if os.IsNotExist(err) {
-					delete(lock.Skills, trackedPath)
-				}
+			rel, err := filepath.Rel(dstDir, p)
+			if err != nil {
+				return nil
 			}
-		}
+			srcEquiv := filepath.Join(srcDir, rel)
+			if _, err := os.Lstat(srcEquiv); os.IsNotExist(err) {
+				_ = os.Remove(p)
+			}
+			return nil
+		})
 	}
 
 	return nil
-}
-
-func cleanEmptyParentDirs(filePath, boundaryDir string) {
-	dir := filepath.Dir(filePath)
-	cleanBoundary := filepath.Clean(boundaryDir)
-	for {
-		cleanDir := filepath.Clean(dir)
-		if cleanDir == cleanBoundary || cleanDir == "." || cleanDir == "/" || len(cleanDir) <= len(cleanBoundary) {
-			break
-		}
-		entries, err := os.ReadDir(cleanDir)
-		if err != nil || len(entries) > 0 {
-			break
-		}
-		if err := os.Remove(cleanDir); err != nil {
-			break
-		}
-		dir = filepath.Dir(dir)
-	}
 }
 
 func installMCP(target Agent, root string, skip bool) StepResult {
@@ -1221,15 +1213,47 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+
+		if filepath.IsAbs(linkTarget) {
+			srcDirAbs, err := filepath.Abs(filepath.Dir(src))
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(srcDirAbs, linkTarget)
+			if err != nil || strings.HasPrefix(filepath.Clean(rel), "..") {
+				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
+			}
+			linkTarget = rel
+		} else {
+			cleanTarget := filepath.Clean(linkTarget)
+			if strings.HasPrefix(cleanTarget, "..") {
+				return fmt.Errorf("unsafe symlink %s points outside package: %s", src, linkTarget)
+			}
+		}
+
+		_ = os.Remove(dst)
+		return os.Symlink(linkTarget, dst)
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
 
 	out, err := os.Create(dst)
 	if err != nil {
@@ -1238,11 +1262,6 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 
 	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-
-	info, err := os.Stat(src)
-	if err != nil {
 		return err
 	}
 
