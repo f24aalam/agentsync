@@ -423,10 +423,8 @@ func syncSkillTreesWithPlan(root, destSkillsDir string, plan InstallPlan) error 
 			return err
 		}
 		if exists && !differs {
-			// Complete package matches canonical package! Skip writing to preserve mtime
-			if plan.Lock != nil {
-				plan.Lock.RecordSkillPackage(dirKey, skillName)
-			}
+			// Complete package matches canonical package! Skip writing to preserve mtime.
+			// Matching contents do not prove ownership; do not adopt ownership merely because contents match.
 			continue
 		}
 
@@ -439,11 +437,27 @@ func syncSkillTreesWithPlan(root, destSkillsDir string, plan InstallPlan) error 
 }
 
 func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skillName, root string) error {
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+	// 1. Validate the canonical skill package before destructive operations
+	if err := validateSkillPackage(srcDir, skillName); err != nil {
 		return err
 	}
 
-	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	destParent := filepath.Dir(dstDir)
+	if err := os.MkdirAll(destParent, 0o755); err != nil {
+		return fmt.Errorf("failed to create destination directory for skill package %q: %w", skillName, err)
+	}
+
+	// 2. Prepare replacement content in a temporary directory alongside the destination
+	tmpDir, err := os.MkdirTemp(destParent, "."+skillName+"-tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary staging directory for skill package %q: %w", skillName, err)
+	}
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	// 3. Ensure copied files and symlinks cannot escape the package
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -451,52 +465,63 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 		if err != nil {
 			return err
 		}
-		targetPath := filepath.Join(dstDir, rel)
+		targetPath := filepath.Join(tmpDir, rel)
 
 		if info.IsDir() {
 			return os.MkdirAll(targetPath, 0o755)
 		}
 
-		// If target file already exists and is identical, skip writing to preserve mtime
-		if info.Mode()&os.ModeSymlink == 0 {
-			srcData, err := os.ReadFile(path)
-			if err == nil {
-				if targetData, err := os.ReadFile(targetPath); err == nil && bytes.Equal(targetData, srcData) {
-					return nil
-				}
-			}
-		}
-
 		return CopyFileWithinPackage(path, targetPath, srcDir)
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to copy files for skill package %q: %w", skillName, err)
 	}
 
-	if lock != nil {
-		lock.RecordSkillPackage(dirKey, skillName)
-	}
-
-	// Remove stale files inside this package so it matches canonical source exactly (approved package replacement)
-	_ = filepath.Walk(dstDir, func(p string, fi os.FileInfo, err error) error {
-		if err != nil || fi.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(dstDir, p)
+	// 4. Replace only the approved destination skill package
+	if _, err := os.Lstat(dstDir); err == nil {
+		bakDir, err := os.MkdirTemp(destParent, "."+skillName+"-bak-*")
 		if err != nil {
-			return nil
+			return fmt.Errorf("failed to create backup staging for skill package %q: %w", skillName, err)
 		}
-		srcEquiv := filepath.Join(srcDir, rel)
-		if _, err := os.Lstat(srcEquiv); os.IsNotExist(err) {
-			_ = os.Remove(p)
-		}
-		return nil
-	})
+		_ = os.Remove(bakDir)
 
+		if err := os.Rename(dstDir, bakDir); err != nil {
+			return fmt.Errorf("failed to stage existing skill package %q: %w", skillName, err)
+		}
+
+		if err := os.Rename(tmpDir, dstDir); err != nil {
+			_ = os.Rename(bakDir, dstDir)
+			return fmt.Errorf("failed to install replacement for skill package %q: %w", skillName, err)
+		}
+
+		if err := os.RemoveAll(bakDir); err != nil {
+			return fmt.Errorf("failed to remove stale files for skill package %q: %w", skillName, err)
+		}
+	} else {
+		if err := os.Rename(tmpDir, dstDir); err != nil {
+			return fmt.Errorf("failed to install skill package %q: %w", skillName, err)
+		}
+	}
+
+	// 5. Record ownership only after successful replacement
 	if lock != nil {
 		lock.RecordSkillPackage(dirKey, skillName)
 	}
 	return nil
+}
+
+func validateSkillPackage(srcDir, skillName string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if err := validateSymlinkWithinPackage(path, srcDir); err != nil {
+				return fmt.Errorf("unsafe symlink in skill %q: %w", skillName, err)
+			}
+		}
+		return nil
+	})
 }
 
 func installMCP(target Agent, root string, skip bool) StepResult {
@@ -1292,12 +1317,28 @@ func CopyFileWithinPackage(src, dst, pkgRoot string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	dstDir := filepath.Dir(dst)
+	if dirInfo, err := os.Lstat(dstDir); err == nil {
+		if dirInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe destination %s: parent directory is a symlink", dst)
+		}
+	}
+
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return err
 	}
 
 	if info.Mode()&os.ModeSymlink != 0 {
 		return copySymlinkWithinPackage(src, dst, pkgRoot)
+	}
+
+	// Never follow destination symlinks
+	if dstInfo, err := os.Lstat(dst); err == nil {
+		if dstInfo.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(dst); err != nil {
+				return fmt.Errorf("failed to remove destination symlink %s: %w", dst, err)
+			}
+		}
 	}
 
 	in, err := os.Open(src)
@@ -1324,6 +1365,32 @@ func CopyFileWithinPackage(src, dst, pkgRoot string) error {
 }
 
 func copySymlinkWithinPackage(src, dst, pkgRoot string) error {
+	if err := validateSymlinkWithinPackage(src, pkgRoot); err != nil {
+		return err
+	}
+
+	linkTarget, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+
+	cleanPkgRoot := filepath.Clean(pkgRoot)
+	srcDir := filepath.Dir(src)
+
+	if filepath.IsAbs(linkTarget) {
+		pkgRootAbs, _ := filepath.Abs(cleanPkgRoot)
+		srcDirAbs, _ := filepath.Abs(srcDir)
+		relToSrcDir, _ := filepath.Rel(srcDirAbs, linkTarget)
+		if rel, err := filepath.Rel(pkgRootAbs, linkTarget); err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			linkTarget = relToSrcDir
+		}
+	}
+
+	_ = os.Remove(dst)
+	return os.Symlink(linkTarget, dst)
+}
+
+func validateSymlinkWithinPackage(src, pkgRoot string) error {
 	linkTarget, err := os.Readlink(src)
 	if err != nil {
 		return err
@@ -1383,6 +1450,5 @@ func copySymlinkWithinPackage(src, dst, pkgRoot string) error {
 		return fmt.Errorf("unsafe symlink %s: resolved target %s escapes skill package %s", src, evalTarget, evalPkgRoot)
 	}
 
-	_ = os.Remove(dst)
-	return os.Symlink(linkTarget, dst)
+	return nil
 }
