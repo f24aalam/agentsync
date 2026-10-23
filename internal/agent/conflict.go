@@ -317,16 +317,10 @@ func guidelinesConflict(root string, a Agent) bool {
 		return false
 	}
 
-	// 2. Check if file has managed markers
-	_, hasMarkers := ExtractManagedSection(existingContent)
-	if !hasMarkers {
-		// File has pre-existing user content without managed markers.
-		return true
-	}
-
-	// File has managed markers: the section inside is managed by AgentSync,
-	// and text outside markers is preserved byte-for-byte. Safe update without prompt fatigue.
-	return false
+	// 2. Existing file differs from desired output.
+	// Whether it has managed markers (IsManaged=true) or is pre-existing without markers (IsManaged=false),
+	// this is a conflict requiring prompt (or --yes for managed).
+	return true
 }
 
 func agentIDsUsingGuidelinesDest(agents []Agent, dest string) []string {

@@ -87,6 +87,16 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	if yes {
 		for _, c := range conflicts {
 			switch c.Kind {
+			case agentpkg.KindGuidelines:
+				if !c.IsManaged {
+					plan.SkipGuidelines[c.AgentID] = true
+					if c.DestPath != "" {
+						plan.SkipGuidelinesDest[c.DestPath] = true
+					}
+					for _, id := range c.AgentIDs {
+						plan.SkipGuidelines[id] = true
+					}
+				}
 			case agentpkg.KindSkillPackage:
 				if !c.IsManaged {
 					pkgKey := c.SkillsDir + "/" + c.SkillName

@@ -393,14 +393,19 @@ func TestIntegration_CompleteLifecycle(t *testing.T) {
 		t.Fatalf("expected 2 agents configured on repeat install, got:\n%s", stdout2)
 	}
 
-	// --- Step 3: Update .ai/ source (safe update without prompt fatigue) ---
+	// --- Step 3: Update .ai/ source (detects diff, --yes approves valid managed section) ---
 	env.WriteFile(".ai/guidelines/01-core.md", "# Project Core Guidelines\nUpdated new requirement.\n")
 	conflictsAfterUpdate, err := agentpkg.DetectInstallConflicts(targets, env.RootDir)
 	if err != nil {
 		t.Fatalf("detect conflicts after update failed: %v", err)
 	}
-	if len(conflictsAfterUpdate) > 0 {
-		t.Fatalf("expected 0 conflicts for safe update from .ai/, got: %+v", conflictsAfterUpdate)
+	if len(conflictsAfterUpdate) == 0 {
+		t.Fatalf("expected conflict prompt when .ai/ guidelines differ from destination")
+	}
+	for _, c := range conflictsAfterUpdate {
+		if !c.IsManaged {
+			t.Fatalf("expected IsManaged to be true for valid managed section conflict")
+		}
 	}
 
 	_, _, err = env.RunInstall("-y")

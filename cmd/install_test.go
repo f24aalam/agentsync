@@ -172,7 +172,7 @@ func TestInstallYesFlagSkipsConflictPrompts(t *testing.T) {
 
 	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex"]`)
 	mustWriteInstallFile(t, ".ai/guidelines/core.md", "g")
-	mustWriteInstallFile(t, "AGENTS.md", "existing")
+	mustWriteInstallFile(t, "AGENTS.md", "<!-- BEGIN AGENTSYNC MANAGED -->\nold\n<!-- END AGENTSYNC MANAGED -->\n")
 
 	restoreSF := runInstallStepflow
 	t.Cleanup(func() { runInstallStepflow = restoreSF })
@@ -206,7 +206,7 @@ func TestInstallConflictNoAppliesSkipToPlan(t *testing.T) {
 
 	mustWriteInstallFile(t, ".ai/sync.lock", `agents = ["codex"]`)
 	mustWriteInstallFile(t, ".ai/guidelines/core.md", "g")
-	mustWriteInstallFile(t, "AGENTS.md", "existing")
+	mustWriteInstallFile(t, "AGENTS.md", "<!-- BEGIN AGENTSYNC MANAGED -->\nold\n<!-- END AGENTSYNC MANAGED -->\n")
 
 	key := "install/codex/guidelines"
 	restoreSF := runInstallStepflow
