@@ -559,13 +559,13 @@ func installMCPWithPlan(target Agent, root string, plan InstallPlan) StepResult 
 		allSkipped = false
 
 		if target.MCPFormat == MCPFormatTOML {
-			if err := mergeOrWriteTomlMCP(destWrite, target, cfg, plan.Lock, normKey); err != nil {
+			if err := mergeOrWriteTomlMCP(destWrite, target, cfg, plan, normKey); err != nil {
 				firstErr = err
 			}
 			continue
 		}
 
-		if err := mergeOrWriteJSONMCP(destWrite, target, cfg, plan.Lock, normKey); err != nil {
+		if err := mergeOrWriteJSONMCP(destWrite, target, cfg, plan, normKey); err != nil {
 			firstErr = err
 		}
 	}
@@ -606,10 +606,13 @@ func resolveMCPDestPaths(target Agent) ([]string, error) {
 	return paths, nil
 }
 
-func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *config.LockFile, normKey string) error {
+func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, plan InstallPlan, normKey string) error {
 	// Build managed server entries in the per-agent schema shape.
 	managed := make(map[string]any, len(cfg.Servers))
 	for name, server := range cfg.Servers {
+		if plan.IsMCPServerSkipped(normKey, name) {
+			continue
+		}
 		rendered := renderManagedServerJSON(target, name, server)
 		if rendered != nil {
 			managed[name] = rendered
@@ -634,8 +637,8 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 		// Update or insert managed servers
 		for name, v := range managed {
 			existingServers[name] = v
-			if lock != nil {
-				lock.RecordMCP(normKey, name)
+			if plan.Lock != nil {
+				plan.Lock.RecordMCP(normKey, name)
 			}
 		}
 
@@ -665,9 +668,9 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, lock *
 	}
 	data = append(data, '\n')
 
-	if lock != nil {
+	if plan.Lock != nil {
 		for name := range managed {
-			lock.RecordMCP(normKey, name)
+			plan.Lock.RecordMCP(normKey, name)
 		}
 	}
 
@@ -774,32 +777,43 @@ func mcpJSONRoot(target Agent) (rootKey string, renderRoot func() map[string]any
 	}
 }
 
-func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, lock *config.LockFile, normKey string) error {
+func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, plan InstallPlan, normKey string) error {
+	serversToWrite := make(map[string]config.MCPServer, len(cfg.Servers))
+	for name, srv := range cfg.Servers {
+		if !plan.IsMCPServerSkipped(normKey, name) {
+			serversToWrite[name] = srv
+		}
+	}
+
 	existing, err := os.ReadFile(dest)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		rendered := renderTomlMCPServers(cfg.Servers)
+		rendered := renderTomlMCPServers(serversToWrite)
 		if !strings.HasSuffix(rendered, "\n") {
 			rendered += "\n"
 		}
-		if lock != nil {
-			for name := range cfg.Servers {
-				lock.RecordMCP(normKey, name)
+		if plan.Lock != nil {
+			for name := range serversToWrite {
+				plan.Lock.RecordMCP(normKey, name)
 			}
 		}
 		return writeFileWithParents(dest, []byte(rendered))
 	}
 
-	updated, err := updateTomlMCPServersWithLock(string(existing), cfg.Servers, lock, normKey)
+	if len(serversToWrite) == 0 {
+		return nil
+	}
+
+	updated, err := updateTomlMCPServersWithLock(string(existing), serversToWrite, plan.Lock, normKey)
 	if err != nil {
 		return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
 	}
 
-	if lock != nil {
-		for name := range cfg.Servers {
-			lock.RecordMCP(normKey, name)
+	if plan.Lock != nil {
+		for name := range serversToWrite {
+			plan.Lock.RecordMCP(normKey, name)
 		}
 	}
 

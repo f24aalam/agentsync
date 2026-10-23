@@ -93,11 +93,9 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 					plan.SkipSkillPackages[pkgKey] = true
 				}
 			case agentpkg.KindMCP:
-				if !c.IsManaged {
-					if c.DestPath != "" {
-						plan.SkipMCPDest[c.DestPath] = true
-					} else {
-						plan.SkipMCP[c.AgentID] = true
+				for _, srv := range c.ConflictingServers {
+					if lock == nil || !lock.IsMCPManaged(c.DestPath, srv) {
+						plan.SkipMCPServer(c.DestPath, srv)
 					}
 				}
 			}
@@ -132,10 +130,8 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 				case agentpkg.KindSkillsDir:
 					plan.SkipSkillsDir[c.SkillsDir] = true
 				case agentpkg.KindMCP:
-					if c.DestPath != "" {
-						plan.SkipMCPDest[c.DestPath] = true
-					} else {
-						plan.SkipMCP[c.AgentID] = true
+					for _, srv := range c.ConflictingServers {
+						plan.SkipMCPServer(c.DestPath, srv)
 					}
 				}
 			}

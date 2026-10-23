@@ -450,7 +450,6 @@ func findConflictingMCPServers(root string, a Agent, dest string, cfg config.MCP
 			}
 			existingServerRaw, exists := existingServers[name]
 			if !exists {
-				conflicting = append(conflicting, name)
 				continue
 			}
 			existingServerMap, ok := existingServerRaw.(map[string]any)
@@ -536,7 +535,6 @@ func findConflictingMCPServers(root string, a Agent, dest string, cfg config.MCP
 		}
 		existingServer, exists := existingServers[name]
 		if !exists {
-			conflicting = append(conflicting, name)
 			continue
 		}
 

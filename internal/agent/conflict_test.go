@@ -68,6 +68,7 @@ func TestDetectInstallConflictsMCP(t *testing.T) {
 [servers.pg]
 command = "npx"
 `)
+	// Missing server in destination does NOT trigger conflict
 	mustWriteConflict(t, dir, ".codex/config.toml", "[mcp_servers]\n")
 	codex, _ := ByID("codex")
 	conflicts, err := DetectInstallConflicts([]Agent{codex}, dir)
@@ -80,8 +81,24 @@ command = "npx"
 			mcp = append(mcp, c)
 		}
 	}
-	if len(mcp) != 1 || mcp[0].AgentID != "codex" {
-		t.Fatalf("expected one MCP conflict, got %+v", conflicts)
+	if len(mcp) != 0 {
+		t.Fatalf("expected no MCP conflict for missing destination server, got %+v", mcp)
+	}
+
+	// Existing destination server with different command DOES trigger conflict
+	mustWriteConflict(t, dir, ".codex/config.toml", "[mcp_servers.pg]\ncommand = \"other\"\n")
+	conflicts2, err := DetectInstallConflicts([]Agent{codex}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mcp2 []InstallConflict
+	for _, c := range conflicts2 {
+		if c.Kind == KindMCP {
+			mcp2 = append(mcp2, c)
+		}
+	}
+	if len(mcp2) != 1 || mcp2[0].AgentID != "codex" {
+		t.Fatalf("expected one MCP conflict for differing server, got %+v", mcp2)
 	}
 }
 

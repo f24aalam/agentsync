@@ -968,10 +968,10 @@ command = "my-custom-tool"
 	if c.Kind != KindMCP {
 		t.Fatalf("expected KindMCP, got %v", c.Kind)
 	}
-	if !slices.Equal(c.ConflictingServers, []string{"fetch", "postgres"}) {
-		t.Errorf("expected conflicting servers [fetch postgres], got %v", c.ConflictingServers)
+	if !slices.Equal(c.ConflictingServers, []string{"fetch"}) {
+		t.Errorf("expected conflicting servers [fetch], got %v", c.ConflictingServers)
 	}
-	expectedPromptSnippet := "Codex MCP configuration differs:\n.codex/config.toml\n\nConflicting servers:\n- fetch\n- postgres\n\nReplace these entries using .ai/mcp.toml?"
+	expectedPromptSnippet := "Codex MCP configuration differs:\n.codex/config.toml\n\nConflicting servers:\n- fetch\n\nReplace these entries using .ai/mcp.toml?"
 	if c.Question != expectedPromptSnippet {
 		t.Errorf("prompt mismatch.\nWant:\n%s\nGot:\n%s", expectedPromptSnippet, c.Question)
 	}
@@ -979,16 +979,23 @@ command = "my-custom-tool"
 		t.Errorf("expected IsManaged to be false since fetch is unmanaged in destination")
 	}
 
-	// 1. Decline overwrite: destination must remain untouched
+	// 1. Decline overwrite: conflicting fetch is preserved, but missing postgres is safely added
 	planDecline := NewInstallPlan()
-	planDecline.SkipMCPDest[".codex/config.toml"] = true
+	planDecline.SkipMCPServer(".codex/config.toml", "fetch")
 	resDecline := installMCPWithPlan(codex, ".", planDecline)
-	if resDecline.Status != StepStatusSkipped {
-		t.Fatalf("expected skipped status, got %+v", resDecline)
+	if resDecline.Status != StepStatusOK {
+		t.Fatalf("expected ok status for safe additions, got %+v", resDecline)
 	}
 	contentAfterDecline, _ := os.ReadFile(".codex/config.toml")
-	if string(contentAfterDecline) != existingCodex {
-		t.Fatalf("declined install modified destination file!")
+	declineStr := string(contentAfterDecline)
+	if !strings.Contains(declineStr, `command = "old-fetch"`) {
+		t.Fatalf("declined conflicting server 'fetch' was overwritten! Content:\n%s", declineStr)
+	}
+	if !strings.Contains(declineStr, "my-custom-tool") {
+		t.Fatalf("unrelated server lost after decline! Content:\n%s", declineStr)
+	}
+	if !strings.Contains(declineStr, "@modelcontextprotocol/server-postgres") {
+		t.Fatalf("safe missing server 'postgres' was not added on decline! Content:\n%s", declineStr)
 	}
 
 	// 2. Approve overwrite: managed servers updated/inserted, unmanaged and settings preserved

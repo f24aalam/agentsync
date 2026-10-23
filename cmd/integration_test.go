@@ -199,14 +199,14 @@ func TestIntegration_ConflictPrompts_InteractiveVsYes(t *testing.T) {
 	// Pre-create CLAUDE.md and .mcp.json with initial content
 	env.WriteFile("CLAUDE.md", "User Manual Claude Instructions\n")
 	env.WriteFile(".claude/skills/user-skill/SKILL.md", "Existing skill\n")
-	env.WriteFile(".mcp.json", `{"mcpServers": {"existing": {"command": "tool"}}}`)
+	env.WriteFile(".mcp.json", `{"mcpServers": {"existing": {"command": "tool"}, "postgres": {"command": "old-pg"}}}`)
 
 	env.PopulateStandardAI([]string{"claude-code"})
 
 	// Override interactive stepflow to simulate user answering:
 	// - Guidelines overwrite: NO (preserve user's CLAUDE.md)
 	// - Skills overwrite: YES (update skills)
-	// - MCP overwrite: NO (preserve user's .mcp.json)
+	// - MCP overwrite: NO (preserve user's .mcp.json conflicting postgres)
 	restoreStepflow := runInstallStepflow
 	defer func() { runInstallStepflow = restoreStepflow }()
 
@@ -238,19 +238,27 @@ func TestIntegration_ConflictPrompts_InteractiveVsYes(t *testing.T) {
 	// 2. Skills were accepted -> new skill added
 	env.AssertFileExists(".claude/skills/code-review/SKILL.md")
 
-	// 3. MCP was skipped -> original content preserved without new postgres server
+	// 3. MCP conflicting server was declined -> old-pg preserved, but safe missing filesystem added
 	env.AssertFileContains(".mcp.json", "existing")
-	env.AssertFileNotContains(".mcp.json", "postgres")
+	env.AssertFileContains(".mcp.json", "old-pg")
+	env.AssertFileContains(".mcp.json", "filesystem")
 
-	// Now run with -y: everything should overwrite regardless of previous skip
-	stdoutY, stderrY, errY := env.RunInstall("-y")
-	if errY != nil {
-		t.Fatalf("install -y failed: %v\nStderr: %s\nStdout: %s", errY, stderrY, stdoutY)
+	// Now run interactive with YES: user explicitly approves replacing conflicting entries
+	runInstallStepflow = func(steps []stepflow.Step) (stepflow.Result, error) {
+		res := make(stepflow.Result)
+		for _, s := range steps {
+			res[s.Key()] = "Yes"
+		}
+		return res, nil
+	}
+	stdoutApprove, stderrApprove, errApprove := env.RunInstall()
+	if errApprove != nil {
+		t.Fatalf("interactive approve failed: %v\nStderr: %s\nStdout: %s", errApprove, stderrApprove, stdoutApprove)
 	}
 
 	env.AssertFileContains("CLAUDE.md", "Project Core Guidelines")
-	env.AssertFileContains(".mcp.json", "postgres")
-	_ = stdoutY
+	env.AssertFileContains(".mcp.json", "@modelcontextprotocol/server-postgres")
+	_ = stdoutApprove
 }
 
 // TestSafety_MCP_DoNotDeleteUnmanagedUserServers verifies that unmanaged user servers
