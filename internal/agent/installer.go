@@ -15,6 +15,12 @@ import (
 	"github.com/f24aalam/agentsync/internal/config"
 )
 
+var (
+	osRename    = os.Rename
+	osRemoveAll = os.RemoveAll
+	osWriteFile = os.WriteFile
+)
+
 const (
 	guidelinesSourceDir = ".ai/guidelines"
 	skillsSourceDir     = ".ai/skills"
@@ -453,7 +459,7 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 		return fmt.Errorf("failed to create temporary staging directory for skill package %q: %w", skillName, err)
 	}
 	defer func() {
-		_ = os.RemoveAll(tmpDir)
+		_ = osRemoveAll(tmpDir)
 	}()
 
 	// 3. Ensure copied files and symlinks cannot escape the package
@@ -483,30 +489,45 @@ func copySkillPackage(srcDir, dstDir string, lock *config.LockFile, dirKey, skil
 		if err != nil {
 			return fmt.Errorf("failed to create backup staging for skill package %q: %w", skillName, err)
 		}
-		_ = os.Remove(bakDir)
+		if err := os.Remove(bakDir); err != nil {
+			_ = osRemoveAll(bakDir)
+			return fmt.Errorf("failed to prepare backup staging for skill package %q: %w", skillName, err)
+		}
 
-		if err := os.Rename(dstDir, bakDir); err != nil {
+		if err := osRename(dstDir, bakDir); err != nil {
 			return fmt.Errorf("failed to stage existing skill package %q: %w", skillName, err)
 		}
 
-		if err := os.Rename(tmpDir, dstDir); err != nil {
-			_ = os.Rename(bakDir, dstDir)
-			return fmt.Errorf("failed to install replacement for skill package %q: %w", skillName, err)
+		if err := osRename(tmpDir, dstDir); err != nil {
+			rollbackErr := osRename(bakDir, dstDir)
+			if rollbackErr != nil {
+				return errors.Join(
+					fmt.Errorf("failed to install replacement for skill package %q: %w", skillName, err),
+					fmt.Errorf("rollback to restore original package from backup %s failed: %w", bakDir, rollbackErr),
+				)
+			}
+			return fmt.Errorf("failed to install replacement for skill package %q: %w (original package restored)", skillName, err)
 		}
 
-		if err := os.RemoveAll(bakDir); err != nil {
-			return fmt.Errorf("failed to remove stale files for skill package %q: %w", skillName, err)
+		// 5. Record ownership only after successful replacement
+		if lock != nil {
+			lock.RecordSkillPackage(dirKey, skillName)
+		}
+
+		if err := osRemoveAll(bakDir); err != nil {
+			return fmt.Errorf("skill package %q installed successfully, but failed to remove temporary backup at %s: %w", skillName, bakDir, err)
 		}
 	} else {
-		if err := os.Rename(tmpDir, dstDir); err != nil {
+		if err := osRename(tmpDir, dstDir); err != nil {
 			return fmt.Errorf("failed to install skill package %q: %w", skillName, err)
+		}
+
+		// 5. Record ownership only after successful replacement
+		if lock != nil {
+			lock.RecordSkillPackage(dirKey, skillName)
 		}
 	}
 
-	// 5. Record ownership only after successful replacement
-	if lock != nil {
-		lock.RecordSkillPackage(dirKey, skillName)
-	}
 	return nil
 }
 
@@ -1268,7 +1289,7 @@ func writeFileWithParents(path string, data []byte) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o644)
+	return osWriteFile(path, data, 0o644)
 }
 
 func copyDir(src, dst string) error {
