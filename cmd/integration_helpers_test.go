@@ -196,6 +196,28 @@ func (e *integrationEnv) RunInit(
 	return stdout.String(), stderr.String(), err
 }
 
+// RunReinit executes `agentsync init` when .ai already exists, answering the reinit survey.
+func (e *integrationEnv) RunReinit(answers reinitAnswers) (string, string, error) {
+	e.T.Helper()
+
+	restoreReinit := runReinitSurvey
+	defer func() {
+		runReinitSurvey = restoreReinit
+	}()
+
+	runReinitSurvey = func(cmd *cobra.Command, currentAgents []string) (reinitAnswers, error) {
+		return answers, nil
+	}
+
+	cmd := newInitCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	err := cmd.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
 // PopulateStandardAI sets up a standard, valid .ai directory with guidelines, skills, MCP, and lockfile.
 func (e *integrationEnv) PopulateStandardAI(agents []string) {
 	e.T.Helper()
