@@ -988,6 +988,8 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 		return "", fmt.Errorf("cannot parse existing TOML config: %w", err)
 	}
 
+	eol := detectLineEnding(existingContent)
+
 	// 2. Parse existing content into structural sections
 	rawLines := strings.Split(strings.ReplaceAll(existingContent, "\r\n", "\n"), "\n")
 	type tomlSection struct {
@@ -1101,9 +1103,9 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 		outLines = append(outLines, strings.Split(renderedManaged, "\n")...)
 	}
 
-	result := strings.Join(outLines, "\n")
-	if !strings.HasSuffix(result, "\n") {
-		result += "\n"
+	result := strings.Join(outLines, eol)
+	if !strings.HasSuffix(result, eol) {
+		result += eol
 	}
 
 	// 6. Validate the final result with toml.Decode
@@ -1261,17 +1263,73 @@ func isRootMCPHeader(header string) bool {
 	return norm == "mcp_servers"
 }
 
+func formatTOMLKey(key string) string {
+	validBare := true
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		validBare = false
+		break
+	}
+	if validBare && len(key) > 0 {
+		return key
+	}
+	return fmt.Sprintf("%q", key)
+}
+
 func mcpServerNameForTable(tableName string) string {
-	norm := normalizeTOMLTableName(tableName)
-	if norm == "mcp_servers" {
+	tableName = strings.TrimSpace(tableName)
+	var rest string
+	if strings.HasPrefix(tableName, "mcp_servers.") {
+		rest = strings.TrimPrefix(tableName, "mcp_servers.")
+	} else if strings.HasPrefix(tableName, "\"mcp_servers\".") {
+		rest = strings.TrimPrefix(tableName, "\"mcp_servers\".")
+	} else if strings.HasPrefix(tableName, "'mcp_servers'.") {
+		rest = strings.TrimPrefix(tableName, "'mcp_servers'.")
+	} else {
 		return ""
 	}
-	if strings.HasPrefix(norm, "mcp_servers.") {
-		rest := strings.TrimPrefix(norm, "mcp_servers.")
-		parts := strings.Split(rest, ".")
-		return parts[0]
+
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 {
+		return ""
 	}
-	return ""
+
+	if rest[0] == '"' {
+		i := 1
+		for i < len(rest) {
+			if rest[i] == '"' {
+				bs := 0
+				for k := i - 1; k >= 0 && rest[k] == '\\'; k-- {
+					bs++
+				}
+				if bs%2 == 0 {
+					var unquoted string
+					if err := json.Unmarshal([]byte(rest[:i+1]), &unquoted); err == nil {
+						return unquoted
+					}
+					return rest[1:i]
+				}
+			}
+			i++
+		}
+		return ""
+	}
+
+	if rest[0] == '\'' {
+		i := strings.IndexByte(rest[1:], '\'')
+		if i != -1 {
+			return rest[1 : 1+i]
+		}
+		return ""
+	}
+
+	idx := strings.IndexByte(rest, '.')
+	if idx != -1 {
+		return strings.TrimSpace(rest[:idx])
+	}
+	return strings.TrimSpace(rest)
 }
 
 func renderTomlMCPServers(servers map[string]config.MCPServer) string {
@@ -1296,7 +1354,8 @@ func renderTomlMCPServers(servers map[string]config.MCPServer) string {
 		if i > 0 {
 			buf.WriteString("\n")
 		}
-		buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", name))
+		formattedKey := formatTOMLKey(name)
+		buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", formattedKey))
 		buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
 		if len(server.Args) > 0 {
 			buf.WriteString("args = [")
@@ -1309,7 +1368,7 @@ func renderTomlMCPServers(servers map[string]config.MCPServer) string {
 			buf.WriteString("]\n")
 		}
 		if len(server.Env) > 0 {
-			buf.WriteString(fmt.Sprintf("\n[mcp_servers.%s.env]\n", name))
+			buf.WriteString(fmt.Sprintf("\n[mcp_servers.%s.env]\n", formattedKey))
 			keys := make([]string, 0, len(server.Env))
 			for key := range server.Env {
 				keys = append(keys, key)
@@ -1328,7 +1387,8 @@ func renderSingleTomlMCPServer(name string, server config.MCPServer) string {
 		return ""
 	}
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", name))
+	formattedKey := formatTOMLKey(name)
+	buf.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", formattedKey))
 	buf.WriteString(fmt.Sprintf("command = %q\n", server.Command))
 	if len(server.Args) > 0 {
 		buf.WriteString("args = [")
@@ -1341,7 +1401,7 @@ func renderSingleTomlMCPServer(name string, server config.MCPServer) string {
 		buf.WriteString("]\n")
 	}
 	if len(server.Env) > 0 {
-		buf.WriteString(fmt.Sprintf("\n[mcp_servers.%s.env]\n", name))
+		buf.WriteString(fmt.Sprintf("\n[mcp_servers.%s.env]\n", formattedKey))
 		keys := make([]string, 0, len(server.Env))
 		for key := range server.Env {
 			keys = append(keys, key)
