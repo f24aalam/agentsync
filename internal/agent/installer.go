@@ -680,12 +680,20 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, plan I
 			existingServers = map[string]any{}
 		}
 
+		var pendingOwnership []string
 		// Update or insert managed servers
 		for name, v := range managed {
-			existingServers[name] = v
-			if plan.Lock != nil {
-				plan.Lock.RecordMCP(normKey, name)
+			existingServerRaw, exists := existingServers[name]
+			if !exists {
+				pendingOwnership = append(pendingOwnership, name)
+			} else {
+				if plan.Lock != nil && plan.Lock.IsMCPManaged(normKey, name) {
+					pendingOwnership = append(pendingOwnership, name)
+				} else if !jsonServerMatches(existingServerRaw, v) {
+					pendingOwnership = append(pendingOwnership, name)
+				}
 			}
+			existingServers[name] = v
 		}
 
 		root[rootKey] = existingServers
@@ -700,7 +708,17 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, plan I
 			return nil
 		}
 
-		return writeFileWithParents(dest, data)
+		if err := writeFileWithParents(dest, data); err != nil {
+			return err
+		}
+
+		if plan.Lock != nil {
+			for _, name := range pendingOwnership {
+				plan.Lock.RecordMCP(normKey, name)
+			}
+		}
+
+		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -714,13 +732,17 @@ func mergeOrWriteJSONMCP(dest string, target Agent, cfg config.MCPConfig, plan I
 	}
 	data = append(data, '\n')
 
+	if err := writeFileWithParents(dest, data); err != nil {
+		return err
+	}
+
 	if plan.Lock != nil {
 		for name := range managed {
 			plan.Lock.RecordMCP(normKey, name)
 		}
 	}
 
-	return writeFileWithParents(dest, data)
+	return nil
 }
 
 func renderManagedServerJSON(target Agent, _ string, server config.MCPServer) any {
@@ -823,9 +845,61 @@ func mcpJSONRoot(target Agent) (rootKey string, renderRoot func() map[string]any
 	}
 }
 
+func jsonServerMatches(existingServer any, renderedServer any) bool {
+	valBytes, err1 := json.Marshal(renderedServer)
+	currBytes, err2 := json.Marshal(existingServer)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return bytes.Equal(valBytes, currBytes)
+}
+
+func mcpServerMatches(existingServerMap map[string]any, server config.MCPServer) bool {
+	existingCmd, _ := existingServerMap["command"].(string)
+	if existingCmd != server.Command {
+		return false
+	}
+
+	var existingArgs []string
+	if rawArgs, ok := existingServerMap["args"].([]any); ok {
+		for _, arg := range rawArgs {
+			if s, ok := arg.(string); ok {
+				existingArgs = append(existingArgs, s)
+			}
+		}
+	}
+	if len(existingArgs) == 0 && len(server.Args) == 0 {
+		// both empty
+	} else if !slices.Equal(existingArgs, server.Args) {
+		return false
+	}
+
+	existingEnv := make(map[string]string)
+	if rawEnv, ok := existingServerMap["env"].(map[string]any); ok {
+		for k, v := range rawEnv {
+			if s, ok := v.(string); ok {
+				existingEnv[k] = s
+			}
+		}
+	}
+	if len(existingEnv) != len(server.Env) {
+		return false
+	}
+	for k, v := range server.Env {
+		if existingEnv[k] != v {
+			return false
+		}
+	}
+
+	return true
+}
+
 func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, plan InstallPlan, normKey string) error {
 	serversToWrite := make(map[string]config.MCPServer, len(cfg.Servers))
 	for name, srv := range cfg.Servers {
+		if strings.TrimSpace(srv.Command) == "" {
+			continue
+		}
 		if !plan.IsMCPServerSkipped(normKey, name) {
 			serversToWrite[name] = srv
 		}
@@ -836,38 +910,71 @@ func mergeOrWriteTomlMCP(dest string, target Agent, cfg config.MCPConfig, plan I
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if len(serversToWrite) == 0 {
+			return nil
+		}
 		rendered := renderTomlMCPServers(serversToWrite)
 		if !strings.HasSuffix(rendered, "\n") {
 			rendered += "\n"
+		}
+		if err := writeFileWithParents(dest, []byte(rendered)); err != nil {
+			return err
 		}
 		if plan.Lock != nil {
 			for name := range serversToWrite {
 				plan.Lock.RecordMCP(normKey, name)
 			}
 		}
-		return writeFileWithParents(dest, []byte(rendered))
+		return nil
 	}
 
 	if len(serversToWrite) == 0 {
 		return nil
 	}
 
-	updated, err := updateTomlMCPServersWithLock(string(existing), serversToWrite, plan.Lock, normKey)
-	if err != nil {
+	var decoded map[string]any
+	if _, err := toml.Decode(string(existing), &decoded); err != nil {
 		return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
 	}
+	existingServers, _ := decoded["mcp_servers"].(map[string]any)
 
-	if plan.Lock != nil {
-		for name := range serversToWrite {
-			plan.Lock.RecordMCP(normKey, name)
+	var pendingOwnership []string
+	for name, srv := range serversToWrite {
+		existingServerRaw, exists := existingServers[name]
+		if !exists {
+			pendingOwnership = append(pendingOwnership, name)
+		} else {
+			if plan.Lock != nil && plan.Lock.IsMCPManaged(normKey, name) {
+				pendingOwnership = append(pendingOwnership, name)
+			} else {
+				existingMap, ok := existingServerRaw.(map[string]any)
+				if !ok || !mcpServerMatches(existingMap, srv) {
+					pendingOwnership = append(pendingOwnership, name)
+				}
+			}
 		}
+	}
+
+	updated, err := updateTomlMCPServers(string(existing), serversToWrite)
+	if err != nil {
+		return fmt.Errorf("cannot parse existing TOML config at %s: %w", dest, err)
 	}
 
 	if string(existing) == updated {
 		return nil
 	}
 
-	return writeFileWithParents(dest, []byte(updated))
+	if err := writeFileWithParents(dest, []byte(updated)); err != nil {
+		return err
+	}
+
+	if plan.Lock != nil {
+		for _, name := range pendingOwnership {
+			plan.Lock.RecordMCP(normKey, name)
+		}
+	}
+
+	return nil
 }
 
 func updateTomlMCPServers(existingContent string, servers map[string]config.MCPServer) (string, error) {

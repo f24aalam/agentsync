@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -447,60 +446,7 @@ func findConflictingMCPServers(root string, a Agent, dest string, cfg config.MCP
 				continue
 			}
 			existingServerMap, ok := existingServerRaw.(map[string]any)
-			if !ok {
-				conflicting = append(conflicting, name)
-				if lock == nil || !lock.IsMCPManaged(dest, name) {
-					hasUnmanagedConflict = true
-				}
-				continue
-			}
-
-			// Compare command
-			existingCmd, _ := existingServerMap["command"].(string)
-			if existingCmd != server.Command {
-				conflicting = append(conflicting, name)
-				if lock == nil || !lock.IsMCPManaged(dest, name) {
-					hasUnmanagedConflict = true
-				}
-				continue
-			}
-
-			// Compare args
-			var existingArgs []string
-			if rawArgs, ok := existingServerMap["args"].([]any); ok {
-				for _, arg := range rawArgs {
-					if s, ok := arg.(string); ok {
-						existingArgs = append(existingArgs, s)
-					}
-				}
-			}
-			if !slices.Equal(existingArgs, server.Args) {
-				conflicting = append(conflicting, name)
-				if lock == nil || !lock.IsMCPManaged(dest, name) {
-					hasUnmanagedConflict = true
-				}
-				continue
-			}
-
-			// Compare env
-			existingEnv := make(map[string]string)
-			if rawEnv, ok := existingServerMap["env"].(map[string]any); ok {
-				for k, v := range rawEnv {
-					if s, ok := v.(string); ok {
-						existingEnv[k] = s
-					}
-				}
-			}
-			envMatch := len(existingEnv) == len(server.Env)
-			if envMatch {
-				for k, v := range server.Env {
-					if existingEnv[k] != v {
-						envMatch = false
-						break
-					}
-				}
-			}
-			if !envMatch {
+			if !ok || !mcpServerMatches(existingServerMap, server) {
 				conflicting = append(conflicting, name)
 				if lock == nil || !lock.IsMCPManaged(dest, name) {
 					hasUnmanagedConflict = true
@@ -532,9 +478,7 @@ func findConflictingMCPServers(root string, a Agent, dest string, cfg config.MCP
 			continue
 		}
 
-		valBytes, _ := json.Marshal(rendered)
-		currBytes, _ := json.Marshal(existingServer)
-		if !bytes.Equal(valBytes, currBytes) {
+		if !jsonServerMatches(existingServer, rendered) {
 			conflicting = append(conflicting, name)
 			if lock == nil || !lock.IsMCPManaged(dest, name) {
 				hasUnmanagedConflict = true
