@@ -244,8 +244,6 @@ directly in the project tree, rather than installing into user home directories.
 
 ## Development
 
-`go.mod` contains `replace github.com/f24aalam/stepflow => ../stepflow` so agentsync builds against the sibling **stepflow** repo in this workspace. That version adds `WithAltScreen(false)`, which keeps the pre-TUI banner visible (the published module uses the alternate screen by default, which hides prior stderr output until exit). If you clone **only** `agentsync`, either check out **stepflow** beside it or remove the `replace` after a published stepflow release includes `WithAltScreen`.
-
 Useful commands:
 
 ```bash
