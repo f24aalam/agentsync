@@ -1,0 +1,11 @@
+---
+description: Cursor Project Rules
+globs: *
+alwaysApply: true
+---
+
+# Cursor Rules
+
+- Follow standard Go formatting (`gofmt` and `goimports`).
+- Limit functions to 50 lines where practical.
+- Avoid global mutable state.

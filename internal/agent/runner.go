@@ -31,6 +31,8 @@ func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
 	results := make([]InstallResult, 0, len(agents))
 	configuredCount := 0
 
+	writtenGuidelines := make(map[string]StepResult)
+
 	for _, target := range agents {
 		var skillsStep StepResult
 		if !target.SkillsSupported {
@@ -44,7 +46,24 @@ func Run(agents []Agent, plan InstallPlan, root string) RunSummary {
 			skillsStep.Target = target.SkillsDir
 		}
 
-		result := InstallAgent(target, root, skillsStep, plan)
+		destG := resolveGuidelinesTarget(target)
+		var gStep StepResult
+		if prev, ok := writtenGuidelines[destG]; ok {
+			gStep = prev
+		} else {
+			skipG := plan.SkipGuidelines[target.ID] || plan.SkipGuidelinesDest[destG]
+			gStep = installGuidelinesWithLock(target, root, skipG, plan.Lock)
+			writtenGuidelines[destG] = gStep
+		}
+
+		result := InstallResult{
+			Agent: target,
+			Steps: []StepResult{
+				gStep,
+				skillsStep,
+				installMCPWithPlan(target, root, plan),
+			},
+		}
 		results = append(results, result)
 		if result.Succeeded() {
 			configuredCount++
@@ -63,15 +82,17 @@ func computeSkillStepsByDir(agents []Agent, plan InstallPlan, root string, would
 	dirs := uniqueSkillDirsForInstall(agents)
 	for _, dir := range dirs {
 		key := SkillDirKey(dir)
-		if !wouldSkills {
-			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
-			continue
-		}
 		if plan.SkipSkillsDir[key] {
 			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
 			continue
 		}
-		if err := copySkillTreesFromAI(root, dir); err != nil {
+		if !wouldSkills {
+			if plan.Lock == nil || !plan.Lock.HasTrackedSkills(dir) {
+				out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusSkipped}
+				continue
+			}
+		}
+		if err := syncSkillTreesWithPlan(root, dir, plan); err != nil {
 			out[key] = StepResult{Name: "Skills", Target: dir, Status: StepStatusError, Err: err}
 			continue
 		}

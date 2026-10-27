@@ -27,9 +27,11 @@ func defaultRunInstallStepflow(steps []stepflow.Step) (stepflow.Result, error) {
 
 func newInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install synced AI configuration for the selected agents",
-		RunE:  runInstallCommand,
+		Use:           "install",
+		Short:         "Install synced AI configuration for the selected agents",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          runInstallCommand,
 	}
 	cmd.Flags().BoolP("yes", "y", false, "Overwrite existing agent files without prompting (non-interactive)")
 	return cmd
@@ -43,7 +45,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	agentIDs, err := config.ReadLock(lockPath)
+	lock, err := config.ReadFullLock(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			printInitRequired(cmd, ".ai/sync.lock")
@@ -51,6 +53,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+	agentIDs := lock.Agents
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
 	okStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
@@ -74,33 +77,71 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	plan := agentpkg.NewInstallPlan()
-	if !yes {
-		conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
+	plan.Lock = lock
+
+	conflicts, err := agentpkg.DetectInstallConflicts(validAgents, ".")
+	if err != nil {
+		return err
+	}
+
+	if yes {
+		for _, c := range conflicts {
+			switch c.Kind {
+			case agentpkg.KindGuidelines:
+				if !c.IsManaged {
+					plan.SkipGuidelines[c.AgentID] = true
+					if c.DestPath != "" {
+						plan.SkipGuidelinesDest[c.DestPath] = true
+					}
+					for _, id := range c.AgentIDs {
+						plan.SkipGuidelines[id] = true
+					}
+				}
+			case agentpkg.KindSkillPackage:
+				if !c.IsManaged {
+					pkgKey := c.SkillsDir + "/" + c.SkillName
+					plan.SkipSkillPackages[pkgKey] = true
+				}
+			case agentpkg.KindMCP:
+				for _, srv := range c.ConflictingServers {
+					if lock == nil || !lock.IsMCPManaged(c.DestPath, srv) {
+						plan.SkipMCPServer(c.DestPath, srv)
+					}
+				}
+			}
+		}
+	} else if len(conflicts) > 0 {
+		steps := make([]stepflow.Step, 0, len(conflicts))
+		for _, c := range conflicts {
+			steps = append(steps, stepflow.Confirm(c.StepKey, c.Question).Default("No"))
+		}
+		res, err := runInstallStepflow(steps)
 		if err != nil {
+			if errors.Is(err, stepflow.ErrCancelled) {
+				return ErrUserAborted
+			}
 			return err
 		}
-		if len(conflicts) > 0 {
-			steps := make([]stepflow.Step, 0, len(conflicts))
-			for _, c := range conflicts {
-				steps = append(steps, stepflow.Confirm(c.StepKey, c.Question).Default("No"))
-			}
-			res, err := runInstallStepflow(steps)
-			if err != nil {
-				if errors.Is(err, stepflow.ErrCancelled) {
-					return ErrUserAborted
-				}
-				return err
-			}
-			for _, c := range conflicts {
-				overwrite := res.Bool(c.StepKey)
-				if !overwrite {
-					switch c.Kind {
-					case agentpkg.KindGuidelines:
-						plan.SkipGuidelines[c.AgentID] = true
-					case agentpkg.KindMCP:
-						plan.SkipMCP[c.AgentID] = true
-					case agentpkg.KindSkillsDir:
-						plan.SkipSkillsDir[c.SkillsDir] = true
+		for _, c := range conflicts {
+			overwrite := res.Bool(c.StepKey)
+			if !overwrite {
+				switch c.Kind {
+				case agentpkg.KindGuidelines:
+					plan.SkipGuidelines[c.AgentID] = true
+					if c.DestPath != "" {
+						plan.SkipGuidelinesDest[c.DestPath] = true
+					}
+					for _, id := range c.AgentIDs {
+						plan.SkipGuidelines[id] = true
+					}
+				case agentpkg.KindSkillPackage:
+					pkgKey := c.SkillsDir + "/" + c.SkillName
+					plan.SkipSkillPackages[pkgKey] = true
+				case agentpkg.KindSkillsDir:
+					plan.SkipSkillsDir[c.SkillsDir] = true
+				case agentpkg.KindMCP:
+					for _, srv := range c.ConflictingServers {
+						plan.SkipMCPServer(c.DestPath, srv)
 					}
 				}
 			}
@@ -127,6 +168,23 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), line)
 		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
+	}
+
+	failedCount := 0
+	for _, result := range summary.Results {
+		if !result.Succeeded() {
+			failedCount++
+		}
+	}
+
+	if err := config.WriteFullLock(lockPath, plan.Lock); err != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error writing %s: %v\n", lockPath, err)
+		return fmt.Errorf("failed to write %s: %w", lockPath, err)
+	}
+
+	if failedCount > 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(fmt.Sprintf("%d configured, %d failed.", summary.ConfiguredCount, failedCount)))
+		return fmt.Errorf("%d agent(s) failed to configure", failedCount)
 	}
 
 	doneLabel := "agents"

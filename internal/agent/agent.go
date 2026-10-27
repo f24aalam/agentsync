@@ -63,13 +63,10 @@ var registry = []Agent{
 	{
 		ID:             "github-copilot",
 		Name:           "GitHub Copilot",
-		// Per your spec, Copilot only needs AGENTS.md for guidelines.
 		GuidelinesFile: "AGENTS.md",
 		SkillsDir:      ".github/skills/",
 		SkillsSupported: true,
-		// Write/read VS Code MCP config for now; install will also support CLI MCP via MCPConfigs.
 		MCPConfig:      ".vscode/mcp.json",
-		MCPConfigs:     []string{"~/.copilot/mcp-config.json"},
 		MCPFormat:      MCPFormatJSON,
 	},
 	{

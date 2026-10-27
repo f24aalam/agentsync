@@ -1,0 +1,9 @@
+[servers.filesystem]
+type = "local"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[servers.fetch]
+type = "local"
+command = "uvx"
+args = ["mcp-server-fetch"]

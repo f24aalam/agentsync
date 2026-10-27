@@ -32,6 +32,11 @@ type initAnswers struct {
 	AddGitignore   bool
 }
 
+type reinitAnswers struct {
+	Agents       []string
+	AddGitignore bool
+}
+
 type importPlan struct {
 	Guidelines []importGuideline
 	Skills     []importSkill
@@ -54,7 +59,7 @@ type importSummaryItem struct {
 }
 
 var (
-	runOverwriteConfirm  = promptOverwriteConfirm
+	runReinitSurvey      = promptReinitSurvey
 	runProjectNamePrompt = promptProjectName
 	runInitSurvey        = promptInitSurvey
 	runImportFlow        = runImportPrompts
@@ -87,18 +92,7 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	if existing {
-		overwrite, err := runOverwriteConfirm(cmd)
-		if err != nil {
-			if errors.Is(err, ErrUserAborted) {
-				printInitCancelled(cmd)
-				return nil
-			}
-			return err
-		}
-		if !overwrite {
-			printInitCancelled(cmd)
-			return nil
-		}
+		return runReinitCommand(cmd)
 	}
 
 	defaultProjectName, err := defaultProjectName()
@@ -215,27 +209,76 @@ func runInitCommand(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func promptOverwriteConfirm(cmd *cobra.Command) (bool, error) {
-	// stepflow is a terminal UI; it doesn't support injecting Cobra's IO
-	// streams. We rely on the default TTY wiring.
+func runReinitCommand(cmd *cobra.Command) error {
+	currentAgents, err := config.ReadLock(lockPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	answers, err := runReinitSurvey(cmd, currentAgents)
+	if err != nil {
+		if errors.Is(err, ErrUserAborted) {
+			printInitCancelled(cmd)
+			return nil
+		}
+		return err
+	}
+
+	if err := config.WriteLock(lockPath, answers.Agents); err != nil {
+		return err
+	}
+
+	var written []string
+	written = append(written, lockPath)
+
+	if answers.AddGitignore {
+		selectedTargets := selectedAgents(answers.Agents)
+		updated, err := scaffold.UpdateGitignore(gitignoreFn, selectedTargets)
+		if err != nil {
+			return err
+		}
+		if updated {
+			written = append(written, gitignoreFn)
+		}
+	}
+
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
+	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
+
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("AgentSync already initialized. Updating configuration:"))
+	for _, path := range written {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", checkStyle.Render("✓"), path)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout())
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Done! Run agentsync install to configure your agents."))
+	return nil
+}
+
+func promptReinitSurvey(cmd *cobra.Command, currentAgents []string) (reinitAnswers, error) {
+	_ = cmd
 	res, err := stepflow.New().
 		WithAltScreen(false).
 		WithTheme(stepflow.DefaultTheme()).
 		WithSteps(
-			stepflow.Confirm(
-				"overwrite",
-				".ai configuration already exists. Overwrite managed files?",
-			).Default("No"),
+			stepflow.List(wizardKeyAgents, "Select target agents").
+				Items(wizardAgentItems()...).
+				PreSelect(currentAgents...).
+				MultiSelect(true).
+				VisibleRows(8),
+			stepflow.Confirm(wizardKeyAddGitignore, "Add generated agent files to .gitignore?").Default("No"),
 		).
 		Run()
 	if err != nil {
 		if errors.Is(err, stepflow.ErrCancelled) {
-			return false, ErrUserAborted
+			return reinitAnswers{}, ErrUserAborted
 		}
-		return false, err
+		return reinitAnswers{}, err
 	}
 
-	return res.Bool("overwrite"), nil
+	return reinitAnswers{
+		Agents:       wizardSplitMultiAnswer(res.Get(wizardKeyAgents)),
+		AddGitignore: res.Bool(wizardKeyAddGitignore),
+	}, nil
 }
 
 func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {

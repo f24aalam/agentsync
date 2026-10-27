@@ -57,13 +57,13 @@ which records the selected target agents for the project.
 
 | Agent | ID | Guidelines Output | Skills Output | MCP Output |
 | --- | --- | --- | --- | --- |
-| Claude Code | `claude-code` | `CLAUDE.md` | `.agents/skills/` | `.mcp.json` |
-| Cursor | `cursor` | `.cursor/rules/agentsync.mdc` | `.agents/skills/` | `.cursor/mcp.json` |
+| Claude Code | `claude-code` | `CLAUDE.md` | `.claude/skills/` | `.mcp.json` |
+| Cursor | `cursor` | `.cursor/rules/agentsync.mdc` | `.cursor/skills/` | `.cursor/mcp.json` |
 | Codex | `codex` | `AGENTS.md` | `.agents/skills/` | `.codex/config.toml` |
-| Gemini CLI | `gemini-cli` | `GEMINI.md` | `.agents/skills/` | `.gemini/mcp.json` |
-| GitHub Copilot | `github-copilot` | `.github/copilot-instructions.md` | `.agents/skills/` | `.vscode/mcp.json` |
-| Junie | `junie` | `.junie/guidelines.md` | `.agents/skills/` | `.junie/mcp.json` |
-| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills/` | `.opencode/opencode.json` |
+| Gemini CLI | `gemini-cli` | `GEMINI.md` | *(not supported)* | `.gemini/settings.json` |
+| GitHub Copilot | `github-copilot` | `AGENTS.md` | `.github/skills/` | `.vscode/mcp.json` |
+| Junie | `junie` | `.junie/guidelines.md` | `.junie/skills/` | `.junie/mcp/mcp.json` |
+| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills/` | `opencode.json` |
 
 ## Installation
 
@@ -136,43 +136,34 @@ Example:
 ./agentsync install
 ```
 
-### 5. Inspect What `agentsync` Sees
-
-```bash
-./agentsync list
-```
-
 ## Commands
+
+AgentSync v1 intentionally exposes only two commands:
 
 ### `agentsync init`
 
-Scaffolds `.ai/` and writes `.ai/sync.lock`.
+Scaffolds `.ai/` and configures target agents in `.ai/sync.lock`.
 
-Features:
+**Fresh project:**
+- Detects existing AI coding agent configurations, skills, guidelines, and MCP servers.
+- Deduplicates identical content and lets you choose what to import.
+- Lets you select target AI coding agents and saves them to `.ai/sync.lock`.
+- Original configuration files are preserved intact.
 
-- interactive TUI powered by [stepflow](https://github.com/f24aalam/stepflow) (Bubble Tea)
-- safe overwrite confirmation if `.ai/` already exists
-- optional `.gitignore` updates for generated agent files
-- project name detection from the current directory
+**Existing project (`.ai/` already initialized):**
+- Safely detects existing initialization.
+- Preserves all canonical guidelines, skills, and MCP configurations without reimporting or deleting.
+- Prompts with your currently configured agents pre-selected, allowing you to update or add agents cleanly.
 
 ### `agentsync install`
 
-Reads `.ai/sync.lock` and generates agent outputs for every selected agent.
+Reads `.ai/sync.lock` and distributes configurations from `.ai/` to every selected coding agent.
 
 Behavior:
-
-- merges all `.md` files in `.ai/guidelines/` alphabetically
-- copies each skill directory from `.ai/skills/`
-- parses `.ai/mcp.toml` and renders JSON or TOML depending on the target agent
-- continues installing remaining agents even if one agent fails
-
-When a target file or directory **already has content** and `agentsync` would write there, you get an interactive prompt (via [stepflow](https://github.com/f24aalam/stepflow)) per category:
-
-- **Guidelines** — per agent (e.g. existing `AGENTS.md`, Cursor rules file)
-- **Skills** — once per shared output directory (e.g. `.agents/skills/` used by several agents), listing which agent IDs share it
-- **MCP** — per agent if any of that agent’s MCP config paths already exist
-
-Answering **No** (default) **skips** that step; **Yes** overwrites or merges as usual. If there is nothing to generate from `.ai/` for a category, no prompt is shown for that category.
+- **Guidelines**: Merges all `.md` files in `.ai/guidelines/` deterministically into managed sections (`<!-- BEGIN AGENTSYNC MANAGED -->` ... `<!-- END AGENTSYNC MANAGED -->`), preserving any surrounding user instructions. Shared destinations (like `AGENTS.md`) are deduplicated and resolved as a single atomic target.
+- **Skills**: Copies each skill package directory from `.ai/skills/` preserving supporting files and relative symlinks.
+- **MCP**: Translates `.ai/mcp.toml` into agent-specific configurations (JSON or TOML), preserving existing unmanaged servers.
+- **Conflict Handling**: Prompts before overwriting modified or unmanaged content. Destinations matching desired output are skipped automatically.
 
 Non-interactive / CI:
 
@@ -182,16 +173,7 @@ agentsync install --yes
 agentsync install -y
 ```
 
-This applies all writes without prompts.
-
-### `agentsync list`
-
-Displays a clean summary of what exists in `.ai/`:
-
-- guideline files
-- skill folders
-- MCP server names
-- selected agents from `sync.lock`
+`--yes` approves ordinary managed replacements without interactive prompts, while still refusing to corrupt or delete unmanaged content.
 
 ## Example Workflow
 
@@ -262,8 +244,6 @@ directly in the project tree, rather than installing into user home directories.
 
 ## Development
 
-`go.mod` contains `replace github.com/f24aalam/stepflow => ../stepflow` so agentsync builds against the sibling **stepflow** repo in this workspace. That version adds `WithAltScreen(false)`, which keeps the pre-TUI banner visible (the published module uses the alternate screen by default, which hides prior stderr output until exit). If you clone **only** `agentsync`, either check out **stepflow** beside it or remove the `replace` after a published stepflow release includes `WithAltScreen`.
-
 Useful commands:
 
 ```bash
@@ -286,6 +266,5 @@ The CLI is functional end to end:
 
 - `init`
 - `install`
-- `list`
 
-The current implementation focuses on a clean local-project workflow with deterministic generated outputs and test coverage for the core sync pipeline.
+The current implementation focuses on a clean local-project workflow with deterministic generated outputs and comprehensive test coverage for the core sync pipeline.

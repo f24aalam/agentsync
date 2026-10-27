@@ -1,0 +1,9 @@
+agents = [
+  "claude-code",
+  "cursor",
+  "codex",
+  "gemini-cli",
+  "github-copilot",
+  "junie",
+  "opencode",
+]

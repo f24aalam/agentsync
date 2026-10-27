@@ -1,0 +1,13 @@
+{
+  "theme": "dark",
+  "mcpServers": {
+    "filesystem": {
+      "command": "node",
+      "args": ["./local-filesystem-wrapper.js"]
+    },
+    "unrelated-db": {
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db", "local.db"]
+    }
+  }
+}
