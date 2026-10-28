@@ -242,8 +242,8 @@ func runReinitCommand(cmd *cobra.Command) error {
 		}
 	}
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
-	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Primary)
+	checkStyle := lipgloss.NewStyle().Foreground(cliTheme.Success)
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("AgentSync already initialized. Updating configuration:"))
 	for _, path := range written {
@@ -258,7 +258,7 @@ func promptReinitSurvey(cmd *cobra.Command, currentAgents []string) (reinitAnswe
 	_ = cmd
 	res, err := stepflow.New().
 		WithAltScreen(false).
-		WithTheme(stepflow.DefaultTheme()).
+		WithTheme(cliTheme).
 		WithSteps(
 			stepflow.List(wizardKeyAgents, "Select target agents").
 				Items(wizardAgentItems()...).
@@ -305,7 +305,7 @@ func promptProjectName(cmd *cobra.Command, defaultName string) (string, error) {
 
 	res, err := stepflow.New().
 		WithAltScreen(false).
-		WithTheme(stepflow.DefaultTheme()).
+		WithTheme(cliTheme).
 		WithSteps(
 			stepflow.Text(wizardKeyProjectName, "Project name").
 				Placeholder("my-project").
@@ -572,8 +572,8 @@ func printInitCancelled(cmd *cobra.Command) {
 }
 
 func printInitSummary(cmd *cobra.Command, written []string) {
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
-	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Primary)
+	checkStyle := lipgloss.NewStyle().Foreground(cliTheme.Success)
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Creating .ai/"))
 	for _, path := range written {
@@ -998,8 +998,8 @@ func (s *dynamicMCPSelectionStep) NextSteps(completed stepflow.Result) []stepflo
 }
 
 func printImportSummary(cmd *cobra.Command, items []importSummaryItem) {
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
-	checkStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Primary)
+	checkStyle := lipgloss.NewStyle().Foreground(cliTheme.Success)
 
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Importing existing configs..."))
 	for _, item := range items {

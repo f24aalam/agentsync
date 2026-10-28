@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -38,8 +37,7 @@ func IsSilentError(err error) bool {
 }
 
 func printInitRequired(cmd *cobra.Command, subject string) {
-	label := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen).Render("Error:")
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s %s not found. Run `agentsync init` first.\n", label, subject)
+	PrintError(cmd.ErrOrStderr(), fmt.Errorf("%s not found. Run `agentsync init` first.", subject))
 }
 
 var rootCmd = &cobra.Command{

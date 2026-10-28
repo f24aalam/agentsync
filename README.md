@@ -69,18 +69,20 @@ which records the selected target agents for the project.
 
 ### Linux/macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/f24aalam/agentsync/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/f24aalam/agentsync/main/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/f24aalam/agentsync/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/f24aalam/agentsync/main/install.ps1 | iex
 ```
+
+Both scripts install the latest published GitHub release. To build the current `main` branch instead, follow the local build instructions below.
 
 ### Build Locally
 
 ```bash
-git clone <your-repo-url>
+git clone --branch main https://github.com/f24aalam/agentsync.git
 cd agentsync
 go build -o agentsync .
 ```
@@ -202,7 +204,7 @@ After `agentsync install`, you may get:
 CLAUDE.md
 .cursor/rules/agentsync.mdc
 .codex/config.toml
-.gemini/mcp.json
+.gemini/settings.json
 .agents/skills/example-skill/
 ```
 

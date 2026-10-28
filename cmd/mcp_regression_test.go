@@ -105,8 +105,9 @@ func TestRegression_MCP_ExistingUnmanagedConflictPreservedWithYes(t *testing.T) 
 	env.WriteFile(".codex/config.toml", `# Codex configuration
 model = "o3-mini"
 
-[mcp_servers.postgres]
-command = "my-custom-postgres-proxy"
+[mcp_servers]
+postgres = { command = "my-custom-postgres-proxy" }
+keep = { command = "keepcmd" }
 
 [mcp_servers.my_tool]
 command = "my-tool"
@@ -123,6 +124,9 @@ command = "my-tool"
 	}
 
 	codex := env.ReadFile(".codex/config.toml")
+	if !strings.Contains(codex, `keep = { command = "keepcmd" }`) {
+		t.Errorf("unmanaged root-table server was lost! Content:\n%s", codex)
+	}
 	if !strings.Contains(codex, `command = "my-custom-postgres-proxy"`) {
 		t.Errorf("unmanaged conflicting postgres was overwritten by --yes! Content:\n%s", codex)
 	}

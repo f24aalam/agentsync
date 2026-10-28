@@ -1,9 +1,21 @@
 package cmd
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+	"io"
 
-// Green-only palette for all CLI output (aligned with stepflow DefaultTheme).
-const (
-	ThemeGreen      = lipgloss.Color("#4ade80") // primary accent
-	ThemeGreenMuted = lipgloss.Color("#22c55e") // secondary (still green)
+	"github.com/charmbracelet/lipgloss"
+	stepflow "github.com/f24aalam/stepflow/pkg"
 )
+
+// cliTheme is shared by interactive flows and standalone CLI output.
+var cliTheme = stepflow.DefaultTheme()
+
+// PrintError prints a fatal error using the CLI theme and the output's color capabilities.
+func PrintError(out io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	style := lipgloss.NewRenderer(out).NewStyle().Bold(true).Foreground(cliTheme.Error)
+	_, _ = fmt.Fprintf(out, "%s %s\n", style.Render("Error:"), err)
+}

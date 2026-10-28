@@ -279,7 +279,7 @@ func copySkillTreesFromAI(root, destSkillsDir string) error {
 // and an existing destination skill package (dstDir).
 // It returns (exists bool, differs bool, err error).
 // If dstDir does not exist, exists=false, differs=false.
-// If dstDir exists, differs=true if any file is missing, extra, or has different contents/symlinks.
+// If dstDir exists, differs=true if any file is missing, extra, or has different contents, file permissions, or symlinks.
 func compareSkillPackages(srcDir, dstDir string) (bool, bool, error) {
 	st, err := os.Lstat(dstDir)
 	if err != nil {
@@ -365,7 +365,7 @@ func compareSkillPackages(srcDir, dstDir string) (bool, bool, error) {
 			continue
 		}
 
-		if srcInfo.Size() != dstInfo.Size() {
+		if srcInfo.Mode().Perm() != dstInfo.Mode().Perm() || srcInfo.Size() != dstInfo.Size() {
 			return true, true, nil
 		}
 
@@ -1053,14 +1053,20 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 	managedIndices := make(map[int]bool)
 
 	for idx, sec := range sections {
+		if isRootMCPHeader(sec.header) {
+			filtered, err := filterRootMCPAssignments(sec.lines, servers)
+			if err != nil {
+				return "", err
+			}
+			sections[idx].lines = filtered
+			continue
+		}
 		srvName := mcpServerNameForTable(sec.header)
 		isManaged := false
 		if srvName != "" {
 			if _, inConfig := servers[srvName]; inConfig {
 				isManaged = true
 			}
-		} else if isRootMCPHeader(sec.header) {
-			isManaged = true
 		}
 
 		if isManaged {
@@ -1115,6 +1121,47 @@ func updateTomlMCPServersWithLock(existingContent string, servers map[string]con
 	}
 
 	return result, nil
+}
+
+// filterRootMCPAssignments preserves the root table and all assignments except
+// those for servers being replaced. Decode complete assignments independently so
+// quoted/dotted keys and multiline values follow the TOML parser's rules.
+func filterRootMCPAssignments(lines []string, servers map[string]config.MCPServer) ([]string, error) {
+	var out []string
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if _, isTable := parseTOMLTableHeader(line); isTable || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			out = append(out, line)
+			i++
+			continue
+		}
+
+		start := i
+		var assignment map[string]any
+		var err error
+		for ; i < len(lines); i++ {
+			assignment = nil
+			_, err = toml.Decode(strings.Join(lines[start:i+1], "\n"), &assignment)
+			if err == nil {
+				i++
+				break
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse root MCP assignment: %w", err)
+		}
+		replace := false
+		for name := range assignment {
+			if _, exists := servers[name]; exists {
+				replace = true
+			}
+		}
+		if !replace {
+			out = append(out, lines[start:i]...)
+		}
+	}
+	return out, nil
 }
 
 func scanMultilineState(line string, inBasic, inLiteral bool) (bool, bool) {

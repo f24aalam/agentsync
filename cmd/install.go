@@ -20,7 +20,7 @@ var runInstallStepflow = defaultRunInstallStepflow
 func defaultRunInstallStepflow(steps []stepflow.Step) (stepflow.Result, error) {
 	return stepflow.New().
 		WithAltScreen(false).
-		WithTheme(stepflow.DefaultTheme()).
+		WithTheme(cliTheme).
 		WithSteps(steps...).
 		Run()
 }
@@ -55,10 +55,10 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	}
 	agentIDs := lock.Agents
 
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen)
-	okStyle := lipgloss.NewStyle().Foreground(ThemeGreen)
-	errStyle := lipgloss.NewStyle().Foreground(ThemeGreen).Bold(true)
-	skipStyle := lipgloss.NewStyle().Foreground(ThemeGreenMuted)
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Primary)
+	okStyle := lipgloss.NewStyle().Foreground(cliTheme.Success)
+	errStyle := lipgloss.NewStyle().Foreground(cliTheme.Error).Bold(true)
+	skipStyle := lipgloss.NewStyle().Foreground(cliTheme.Muted)
 
 	validAgents := make([]agentpkg.Agent, 0, len(agentIDs))
 	unknownAgents := make([]string, 0)
@@ -152,7 +152,7 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 
 	summary := runAgentRunner(validAgents, plan, ".")
 	for _, result := range summary.Results {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Foreground(ThemeGreen).Render(result.Agent.Name))
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Primary).Render(result.Agent.Name))
 		for _, step := range result.Steps {
 			icon := okStyle.Render("✓")
 			if step.Status == agentpkg.StepStatusSkipped {
@@ -178,12 +178,11 @@ func runInstallCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := config.WriteFullLock(lockPath, plan.Lock); err != nil {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error writing %s: %v\n", lockPath, err)
 		return fmt.Errorf("failed to write %s: %w", lockPath, err)
 	}
 
 	if failedCount > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render(fmt.Sprintf("%d configured, %d failed.", summary.ConfiguredCount, failedCount)))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", lipgloss.NewStyle().Bold(true).Foreground(cliTheme.Error).Render(fmt.Sprintf("%d configured, %d failed.", summary.ConfiguredCount, failedCount)))
 		return fmt.Errorf("%d agent(s) failed to configure", failedCount)
 	}
 

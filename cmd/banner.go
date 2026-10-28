@@ -20,10 +20,10 @@ const agentsyncTagline = "Sync AI guidelines, skills & MCP across coding agents"
 
 func printAgentsyncBanner(out io.Writer) {
 	bannerStyle := lipgloss.NewStyle().
-		Foreground(ThemeGreen).
+		Foreground(cliTheme.Primary).
 		Bold(true)
 	tagStyle := lipgloss.NewStyle().
-		Foreground(ThemeGreenMuted).
+		Foreground(cliTheme.Muted).
 		MarginLeft(4)
 
 	_, _ = fmt.Fprintln(out)

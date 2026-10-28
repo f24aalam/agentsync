@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/f24aalam/agentsync/cmd"
@@ -16,7 +15,7 @@ func main() {
 		case errors.Is(err, cmd.ErrUserAborted):
 			os.Exit(130)
 		default:
-			_, _ = fmt.Fprintln(os.Stderr, err)
+			cmd.PrintError(os.Stderr, err)
 			os.Exit(1)
 		}
 	}
